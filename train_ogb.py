@@ -26,6 +26,7 @@ def main():
     parser.add_argument('-lc', dest='lam_causal',type=float,default=1)
     parser.add_argument('-tol', dest='tol',type=float,default=1e-5)
     parser.add_argument('-es', dest='early_stop',type=int,default=1)
+    parser.add_argument('-ni', dest='n_interventions',type=int,default=10)
 
     args = parser.parse_args()
     
@@ -47,10 +48,10 @@ def main():
     np.random.seed(1)
     torch.manual_seed(1)
 
-    model = CausalGAT(args.model_type,dim_in,args.dim_hidden,dim_out,heads=args.K,
-                      n_layers=args.n_layers,edge_dim=edge_dim)
-    model_causal = CausalGAT(args.model_type,dim_in,args.dim_hidden,dim_out,heads=args.K,
-                             n_layers=args.n_layers,edge_dim=edge_dim)
+    model = CausalGAT(args.model_type,dim_in,args.dim_hidden,dim_out,
+                      heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
+    model_causal = CausalGAT(args.model_type,dim_in,args.dim_hidden,dim_out,
+                             heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
         
     initial_learning_rate=0.01
     beta_1=0.9
@@ -128,12 +129,14 @@ def main():
                 intervention_loss=intervention_loss,
                 lam_causal=args.lam_causal,
                 early_stop=args.early_stop,tol=args.tol,verbose=True,
-                pred_criterion=pred_criterion)
+                pred_criterion=pred_criterion,
+                n_interventions_per_node=args.n_interventions)
     
     # save model
-    model_file_name = '{}.{}heads.{}hd.nl{}.lc{}.pt'.format(args.model_type,args.K,
+    model_file_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}.pt'.format(args.model_type,args.K,
                                                             args.dim_hidden,args.n_layers,
-                                                            args.lam_causal)
+                                                            args.lam_causal,
+                                                            args.n_interventions)
     torch.save(model_causal.state_dict(),os.path.join(args.save_dir,model_file_name))
 
     print('Total Time: {} seconds'.format(time.time()-start))

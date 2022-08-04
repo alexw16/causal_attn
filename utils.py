@@ -158,15 +158,19 @@ ROOT_DIR = '/home/sandbox/workspace/sequence-graphs/data/'
 
 def load_ogb_splits(dataset):
     
-    if dataset in ['arxiv','mag']:
-        dataset_dir = os.path.join(ROOT_DIR,'ogb_npp','ogbn_{}'.format(dataset))
-        
+    if 'ogb' in dataset:        
+        if 'ogbn' in dataset:
+            dataset_dir = os.path.join(ROOT_DIR,'ogb_npp',dataset)
+        elif 'ogbg' in dataset:
+            dataset_dir = os.path.join(ROOT_DIR,'ogb_gpp',dataset)
+
         train_idx = pd.read_csv(os.path.join(dataset_dir,'split','time','train.csv.gz'),
                                compression='gzip').values.squeeze()
         valid_idx = pd.read_csv(os.path.join(dataset_dir,'split','time','valid.csv.gz'),
                                compression='gzip').values.squeeze()
         test_idx = pd.read_csv(os.path.join(dataset_dir,'split','time','test.csv.gz'),
                               compression='gzip').values.squeeze()
+        
     elif dataset in ['Cora','CiteSeer','PubMed']:
         
         dataset_dir = os.path.join(ROOT_DIR,'planetoid',dataset)
@@ -181,17 +185,22 @@ def load_ogb_splits(dataset):
     
 def load_ogb_data(dataset):
         
-    if dataset in ['arxiv','mag']:
-        dataset_dir = os.path.join(ROOT_DIR,'ogb_npp','ogbn_{}'.format(dataset))
+    if 'ogb' in dataset:
+        
+        if 'ogbn' in dataset:
+            dataset_dir = os.path.join(ROOT_DIR,'ogb_npp',dataset)
+        elif 'ogbg' in dataset:
+            dataset_dir = os.path.join(ROOT_DIR,'ogb_gpp',dataset)
+        
         data,_ = torch.load(os.path.join(dataset_dir,'processed',
-                                       'geometric_data_processed.pt'))
+                                   'geometric_data_processed.pt'))
         
     elif dataset in ['Cora','CiteSeer','PubMed']:
         dataset_dir = os.path.join(ROOT_DIR,'planetoid',dataset)
         data,_ = torch.load(os.path.join(dataset_dir,'processed',
                                        'data.pt'))
         
-    if dataset == 'arxiv':
+    if 'arxiv' in dataset:
         
         X = data.x
         edge_indices = data.edge_index[[1,0]]
@@ -239,3 +248,15 @@ def load_ogb_data(dataset):
               'pred_criterion': pred_criterion}
     
     return X,edge_indices,Y,edge_attr,addl_params
+
+def aggregate_using_ptr(data,ptr,op='mean'):
+    
+    if op == 'mean':
+        return torch.stack([data[ptr[i]:ptr[i+1]].mean(0) 
+                        for i in range(ptr.size(0)-1)])
+    elif op == 'sum':
+        return torch.stack([data[ptr[i]:ptr[i+1]].sum(0) 
+                        for i in range(ptr.size(0)-1)])
+    elif op == 'median':
+        return torch.stack([data[ptr[i]:ptr[i+1]].median(0).values 
+                        for i in range(ptr.size(0)-1)])
