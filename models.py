@@ -43,7 +43,7 @@ class GATNode(GATBase):
     def __init__(self,model_type,dim_in,dim_hidden,dim_out,
                  heads=3,n_layers=1,edge_dim=None):
         super(GATNode, self).__init__(model_type,dim_in,dim_hidden,dim_out,
-                 heads=3,n_layers=1,edge_dim=None)
+                 heads,n_layers,edge_dim)
         self.linear_final = nn.Linear(dim_hidden*2,dim_out,bias=True)
         self.leakyrelu = nn.LeakyReLU()
         
@@ -65,6 +65,22 @@ class GATNode(GATBase):
 
         return out,attn_weights_list
     
+class GATLink(GATBase):
+    def __init__(self,model_type,dim_in,dim_hidden,dim_out,
+                 heads=3,n_layers=1,edge_dim=None):
+        super(GATLink, self).__init__()
+        self.gatnode = GATNode(model_type,dim_in,dim_hidden,dim_out,
+                 heads,n_layers,edge_dim)
+        self.trans_emb = nn.Parameter(torch.ones(dim_hidden),
+            requires_grad=True)
+        
+    def forward(self,X,edge_indices,edge_indices_pred,edge_attr=None):
+        
+        node_emb,attn_weights_list = self.gatnode(X,edge_indices,edge_attr)
+        i,j = edge_indices_pred[0],edge_indices_pred[1]
+    
+        return ((node_emb[i] + self.trans_emb)*node_emb[j]).sum(1)
+
 class GATGraph(GATBase):
     def __init__(self,model_type,dim_in,dim_hidden,dim_out,
                  heads=3,n_layers=1,edge_dim=None):
