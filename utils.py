@@ -7,134 +7,7 @@ import math
 import torch
 import torch.nn as nn
 
-from torch_geometric.typing import OptTensor
-from torch_geometric.utils.dropout import filter_adj
-
-def convert_adjacency_to_dag(A,orient_by='in_degree'):
-    """
-    Converts the adjacency matrix A into a DAG by sorting nodes by their
-    weighted out-degree or PageRank importance scores and retaining edges 
-    that cohere with this sorting. Nodes are sorted by lowest to highest 
-    values, so nodes with higher values lie upstream in the DAG.
-    """
-    
-    # lower to higher
-    if orient_by == 'out_degree':
-        node_values = A.sum(1)
-    elif orient_by == 'in_degree':
-        node_values = A.sum(0)
-    elif orient_by == 'pagerank':
-        from sknetwork.ranking import PageRank
-        
-        pagerank = PageRank()
-        node_values = pagerank.fit_transform(A)
-        
-    return A*(node_values - node_values[:,None] > 0).astype(float)
-    
-def normalize_adjacency(A,by='incoming'):
-    """
-    Normalizes the weights of the adjacency matrix A by the sum of the 
-    weights of nodes' incoming or outgoing edges.
-    Here, A[i,j] represents the weight of the edge going from node i to
-    node j.
-    """
-    
-    if by == 'outgoing':
-        indegree = A.sum(1)
-        indegree[indegree == 0] = 1
-        norm_A = (A.T / indegree).T
-    elif by == 'incoming':
-        indegree = A.sum(0)
-        indegree[indegree == 0] = 1
-        norm_A = A/indegree
-    
-    return norm_A
-  
-def add_diagonal_and_renormalize(A,lam=0.1,by='incoming'):
-    
-    A_copy = A.copy()
-    if by == 'incoming':
-        A_copy += lam*np.eye(A.shape[0])
-        
-    return normalize_adjacency(A_copy)
-
-def to_sparse_coo_tensor(A):
-    
-    # add small diagonal term if zero incoming/outgoing edges
-    for i in np.where(A.sum(0) == 0)[0]:
-        A[i,i] = 1e-10
-    for i in np.where(A.sum(1) == 0)[0]:
-        A[i,i] = 1e-10
-        
-    from scipy.sparse import coo_matrix
-    
-    sp_A = coo_matrix(A)
-    idx = torch.FloatTensor(np.array([sp_A.row,sp_A.col]))
-    data = torch.FloatTensor(sp_A.data)
-    
-    return torch.sparse_coo_tensor(idx,data)
-
-def construct_dag_from_sequence(L):
-	
-	dag = np.zeros((L,L))
-	for i in range(L-1):
-		dag[i+1,i] = 1
-	return dag
-
-def create_AnX_list(S,S_1,X,L):
-    
-	AnX_list = [S @ X]
-	for n in range(1,L):
-		AnX_list.append(S_1 @ AnX_list[-1])
-	return AnX_list
-
-def model_forecast(model,X,S,S_1,L):
-		
-	AnX_list = create_AnX_list(S,S_1,X,L)
-	return model(AnX_list)[-1].cpu().data.numpy()
-
-def model_forecast_embed(model,X,S,S_1):
-	
-	return model(X,S,S_1)[-1].cpu().data.numpy()
-
-def populate_embeddings_df_with_consumers(embeddings_df,consumer_embedding_dict):
-    
-    newrows_dict = {k: [] for k in embeddings_df.columns}
-    prod_ids = set(embeddings_df['user_id'])
-
-    for i,source_id in enumerate(sorted(list(consumer_embedding_dict.keys()))):
-        newrows_dict['user_id'].append(source_id)
-        newrows_dict['embedding'].append(consumer_embedding_dict[source_id])
-        newrows_dict['idx'].append(i + embeddings_df['idx'].values.max() + 1)
-        newrows_dict['producer'].append(int(source_id) in prod_ids)
-        newrows_dict['consumer'].append(True)
-
-    cons_embeddings_df = pd.concat([embeddings_df,pd.DataFrame(newrows_dict)])
-    cons_embeddings_df['user_id'] = cons_embeddings_df['user_id'].astype(int)
-
-    return cons_embeddings_df
-
-class customLoss(nn.Module):
-    def __init__(self):
-        super(customLoss, self).__init__()
-        
-        print('using custom loss')
-        self.cs = nn.CosineSimilarity()
-        self.mse = nn.MSELoss(reduction='none')
-    
-    def forward(self,output,target):
-        
-        return -self.cs(output,target) + self.mse(output,target).sum(1)
-    
-class NegativeCosineSimilarity(nn.Module):
-    def __init__(self):
-        super(NegativeCosineSimilarity, self).__init__()
-        
-        self.cs = nn.CosineSimilarity()
-    
-    def forward(self,output,target):
-        
-        return -self.cs(output,target)
+from torch_geometric.loader import DataLoader
     
 def positionalencoding1d(d_model, length):
     """
@@ -154,6 +27,78 @@ def positionalencoding1d(d_model, length):
 
     return pe
 
+class AdversarialSampler:
+    def __init__(self,edge_indices,node_indices,edge_sampling_values,K=10):
+        
+        self.edge_indices = edge_indices
+        self.node_indices = node_indices
+        self.edge_sampling_values = edge_sampling_values
+        self.K = K
+        
+        self.get_candidate_edges()
+        
+        # create candidate edge sampler
+        self.candidate_sampler = NeighborSampler(self.candidate_edge_indices,
+                                                 sizes=[1])
+    
+    def get_candidate_edges(self):
+        
+        allneigh_sampler = NeighborSampler(self.edge_indices,sizes=[-1])
+        
+        e_id_list = []
+        for node_idx in self.node_indices:
+            out = allneigh_sampler.sample(node_idx.unsqueeze(0))
+            n_neighbors = out[2].e_id.size(0)
+            n_candidates = min(self.K,n_neighbors)
+            inds2keep = torch.topk(self.edge_sampling_values[out[2].e_id],
+                                   n_candidates).indices
+            e_id_list.extend(out[2].e_id[inds2keep])
+        
+        self.candidate_edge_indices = self.edge_indices[:,e_id_list]
+        self.candidate_e_id = torch.stack(e_id_list)
+        
+    def sample(self,node_indices):
+        out = self.candidate_sampler.sample(node_indices)[2]
+        return self.candidate_e_id[out.e_id]
+
+class AdversarialSampler_v2:
+    def __init__(self,edge_indices,node_indices,edge_sampling_values,K=10):
+        
+        self.edge_indices = edge_indices
+        self.node_indices = node_indices
+        self.edge_sampling_values = edge_sampling_values
+        self.K = K
+        
+        self.get_candidate_edges()
+        
+        # create candidate edge sampler
+        self.candidate_sampler = NeighborSampler(self.candidate_edge_indices,
+                                                 sizes=[1])
+    
+    def get_candidate_edges(self):
+        
+        adj = SparseTensor(row=self.edge_indices[0],
+                           col=self.edge_indices[1],
+                           value=self.edge_sampling_values)
+        
+        allneigh_sampler = NeighborSampler(self.edge_indices,sizes=[-1])
+        
+        e_id_list = []
+        for node_idx in self.node_indices:
+            out = allneigh_sampler.sample(node_idx.unsqueeze(0))
+            n_neighbors = out[2].e_id.size(0)
+            n_candidates = min(self.K,n_neighbors)
+            inds2keep = torch.topk(self.edge_sampling_values[out[2].e_id],
+                                   n_candidates).indices
+            e_id_list.extend(out[2].e_id[inds2keep])
+        
+        self.candidate_edge_indices = self.edge_indices[:,e_id_list]
+        self.candidate_e_id = torch.stack(e_id_list)
+        
+    def sample(self,node_indices):
+        out = self.candidate_sampler.sample(node_indices)[2]
+        return self.candidate_e_id[out.e_id]
+    
 ROOT_DIR = '/home/sandbox/workspace/sequence-graphs/data/'
 
 def load_ogb_splits(dataset):
@@ -181,6 +126,10 @@ def load_ogb_splits(dataset):
         valid_idx = np.where(data.val_mask.data.numpy())[0]
         test_idx = np.where(data.test_mask.data.numpy())[0]
         
+    train_idx = torch.LongTensor(train_idx)
+    valid_idx = torch.LongTensor(valid_idx)
+    test_idx = torch.LongTensor(test_idx)
+    
     return train_idx,valid_idx,test_idx
     
 def load_ogb_data(dataset):
@@ -221,7 +170,6 @@ def load_ogb_data(dataset):
         edge_attr = pos_encoding[year_src_enc]-pos_encoding[year_target_enc]
 
         pred_criterion = nn.CrossEntropyLoss(reduction='none')
-        edge_loss_weights = None
         dim_in = data.x.shape[1]
         dim_out = 40
         
@@ -231,7 +179,6 @@ def load_ogb_data(dataset):
         X = data.x
         Y = data.y
         pred_criterion = nn.CrossEntropyLoss(reduction='none')
-        edge_loss_weights = None
         dim_in = data.x.shape[1]
         dim_out = Y.data.numpy().max()+1
         
@@ -241,15 +188,38 @@ def load_ogb_data(dataset):
     edge_attr = None if edge_attr is None else torch.FloatTensor(edge_attr)
     edge_dim = None if edge_attr is None else edge_attr.shape[1]
     
-    addl_params = {'edge_loss_weights': edge_loss_weights,
-              'dim_in': dim_in,
-              'dim_out': dim_out,
-              'edge_dim': edge_dim,
-              'pred_criterion': pred_criterion}
+    addl_params = {'dim_in': dim_in,
+                   'dim_out': dim_out,
+                   'edge_dim': edge_dim,
+                   'pred_criterion': pred_criterion}
     
     return X,edge_indices,Y,edge_attr,addl_params
 
-def aggregate_using_ptr(data,ptr,op='mean'):
+def load_dataloader(dataset_name,batch_size=256):
+                
+    if 'ogbn' in dataset_name:
+        dataset = PygNodePropPredDataset(name = dataset_name, 
+                                          root = os.path.join(ROOT_DIR,'ogb_npp'))
+    elif 'ogbg' in dataset_name:
+        
+        from ogb.graphproppred import PygGraphPropPredDataset
+        from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
+
+        dataset = PygGraphPropPredDataset(name = dataset_name, 
+                                          root = os.path.join(ROOT_DIR,'ogb_gpp'))
+        dataset.data.y = dataset.data.y.float()
+
+        split_idx = dataset.get_idx_split() 
+        train_loader = DataLoader(dataset[split_idx["train"]], 
+                                  batch_size=batch_size, shuffle=True)
+        valid_loader = DataLoader(dataset[split_idx["valid"]], 
+                                  batch_size=batch_size, shuffle=False)
+        test_loader = DataLoader(dataset[split_idx["test"]], 
+                                 batch_size=batch_size, shuffle=False)
+        
+    return train_loader,valid_loader,test_loader
+
+def aggregate_using_ptr(data,ptr,op='sum'):
     
     if op == 'mean':
         return torch.stack([data[ptr[i]:ptr[i+1]].mean(0) 

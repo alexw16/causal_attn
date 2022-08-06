@@ -1,5 +1,6 @@
 import numpy as np
 import time
+from scipy.sparse import coo_array
 
 import torch
 import torch.nn as nn
@@ -8,130 +9,140 @@ from torch_sparse import SparseTensor
 
 from utils import *
 
-def compute_intervention_loss_pp(model,X,node_indices,parent_target_indices,target_child_indices,
-                              pred_loss,attn_weights,device=0,n_interventions_per_node=3,
-                              edge_attr=None,edge_loss_weights=None,
-                              pred_criterion=NegativeCosineSimilarity()):
-
-    neighIntervSampler = NeighborSampler(parent_target_indices,sizes=[1],
-                                         num_nodes=X.shape[0])
+def get_pruned_e_id(edge_indices,pruned_edge_indices):
     
-    causal_interv_loss = 0
-    for intervention_no in range(n_interventions_per_node):
-        
-        # sample edges to prune + prune edges
-        out = neighIntervSampler.sample(node_indices)
-        pruned_e_id = out[2].e_id
-        mask = torch.ones(parent_target_indices.size(1),dtype=torch.bool, 
-                          device=parent_target_indices.device)
-        mask[pruned_e_id] = False
-        remaining_edge_indices = parent_target_indices[:,mask]
+    pruned_edges = set([(n[0],n[1]) for n 
+                        in pruned_edge_indices.T.data.numpy()])
+    return torch.LongTensor(np.array([i for i,n in enumerate(edge_indices.cpu().T.data.numpy()) 
+               if (n[0],n[1]) in pruned_edges])).to(edge_indices.device)
 
-        # forecasting loss (original vs. intervened)
-        remaining_edge_attr = None if edge_attr is None else edge_attr[mask].to(device)
-
-        interv_preds,_ = model(X,remaining_edge_indices,edge_attr=remaining_edge_attr)
-        interv_pred_loss = pred_criterion(interv_preds[target_child_indices[0]],
-                                          X[target_child_indices[1]])
-        delta_loss = interv_pred_loss - pred_loss
-
-        # forecasting loss per target node
-        delta_loss_adj = SparseTensor(row=target_child_indices[0],
-                                      col=target_child_indices[1],
-                                      value=delta_loss)
-        delta_loss_per_node_mean = delta_loss_adj.mean(1)
-
-        # select attention weights (orig model) related to intervened edges
-        attn_weights_intervened_edge = attn_weights[pruned_e_id].mean(1)
-
-        # identify nodes with pruned parents
-        nodes_with_pruned_parents = parent_target_indices[:,pruned_e_id][1]
-        delta_loss_per_node_mean = delta_loss_per_node_mean[nodes_with_pruned_parents]
-
-        interv_loss = -attn_weights_intervened_edge.dot(delta_loss_per_node_mean)
-        interv_loss = interv_loss/nodes_with_pruned_parents.size(0)/n_interventions_per_node
-        causal_interv_loss += interv_loss
-        
-    return causal_interv_loss
-
-def select_edges_to_prune(node_indices,parent_target_indices,
-                          sampler,sampling='uniform',
-                          edge_sampling_values=None):
+def select_edges_to_prune(node_indices,edge_indices,
+                          sampler=None,
+                          edge_attr=None,sampling='uniform',
+                          candidate_edge_indices=None):
     
     # sample edges to prune
     if sampling == 'uniform':
-        out = sampler.sample(node_indices)
-        pruned_e_id = out[2].e_id
+        pruned_e_id = sampler.sample(node_indices)[2].e_id
 
     elif sampling == 'adversarial':
-        pruned_e_id = get_top_K_per_node(sampler,node_indices,
-                                         parent_target_indices,
-                                         edge_sampling_values,1)
-
-    # identify nodes with pruned parents
-    nodes_with_pruned_parents = parent_target_indices[1,pruned_e_id]
-
-    # get remaining edges
-    mask = torch.ones(parent_target_indices.size(1),dtype=torch.bool, 
-                      device=parent_target_indices.device)
+        # pruned_e_id = sampler.sample(node_indices)
+        pruned_e_id = get_pruned_e_id(edge_indices,candidate_edge_indices)
+        
+    # generate mask of pruned edges
+    mask = torch.ones(edge_indices.size(1),dtype=torch.bool, 
+                      device=edge_indices.device)
     mask[pruned_e_id] = False
 
-    remaining_edge_indices = parent_target_indices[:,mask]
-    remaining_edge_attr = None if edge_attr is None else edge_attr[mask].to(device)
-    
-    return remaining_edge_indices,remaining_edge_attr,nodes_with_pruned_parents
+    return pruned_e_id,mask
+
+def prune_edges(edge_indices,edge_attr,pruned_e_id,mask):
         
-def compute_causal_effect(model,X,Y,preds,edge_indices,edge_attr,node_indices,pred_criterion):
+    remaining_edge_indices = edge_indices[:,mask]
+    remaining_edge_attr = None if edge_attr is None else edge_attr[mask]
+    
+    return remaining_edge_indices,remaining_edge_attr
+        
+def create_edge_item_mapping(ptr,edge_indices):
+    
+    item_index = torch.cat([torch.ones(ptr[i+1]-ptr[i])*i 
+                          for i in range(ptr.size(0)-1)])
+    node_index = torch.arange(ptr.max())
+
+    edge_item_mapping = item_index[edge_indices[0]]
+
+    return torch.stack([torch.arange(edge_indices.size(1)),
+                                  edge_item_mapping]).long()
+
+def compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
+                          edge_attr,node_indices,pred_criterion,
+                          task='npp',ptr=None):
     
     pred_loss = pred_criterion(preds[node_indices],
                                Y[node_indices])
-
-    interv_preds,_ = model(X,edge_indices,edge_attr=edge_attr)
+    
+    if task == 'npp':
+        interv_preds,_ = model(X,remaining_edge_indices,edge_attr=edge_attr)
+    elif task == 'gpp':
+        interv_preds,_ = model(X,remaining_edge_indices,ptr,edge_attr)
     interv_pred_loss = pred_criterion(interv_preds[node_indices],
                                       Y[node_indices])
 
-    causal_effect = (interv_pred_loss - pred_loss)/(1e-10 + pred_loss)
-    causal_effect = 1/(1+torch.exp(-10*(causal_effect-1.5)))
+    causal_effect = (interv_pred_loss - pred_loss)/(1e-20 + pred_loss)
+    causal_effect = 1/(1+torch.exp(-1*(causal_effect-1)))
     causal_effect = causal_effect.detach()
     
     return causal_effect
 
-def compute_intervention_loss_ogb(model,X,node_indices,parent_target_indices,Y,preds,
+def identify_candidate_edges(node_indices,edge_indices,edge_sampling_values):
+    
+    num_nodes = edge_indices.max() + 1
+    adj = coo_array((edge_sampling_values, edge_indices), (num_nodes,num_nodes))
+
+    i = np.array(adj.argmax(0)).squeeze()[node_indices]
+    j = node_indices
+
+    return torch.LongTensor(np.array([i,j]))
+                
+def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
                               attn_weights_list,device=0,n_interventions_per_node=10,
-                              edge_attr=None,edge_loss_weights=None,
-                              pred_criterion=NegativeCosineSimilarity(),
+                              edge_attr=None,
+                              pred_criterion=nn.BCELoss(),
                               sampling='uniform',edge_sampling_values=None,
-                              weight_by_degree=False):
+                              weight_by_degree=False,
+                              task='npp',ptr=None):
     
     sigmoid = nn.Sigmoid()
-    relu = nn.ReLU()
     
-    if sampling == 'uniform':
-        # select one edge per node
-        sampler = NeighborSampler(parent_target_indices,
-                                  sizes=[1],num_nodes=X.shape[0])
-    elif sampling == 'adversarial':
-        # get all node parents
-        sampler = NeighborSampler(parent_target_indices,
-                                  sizes=[-1],num_nodes=X.shape[0])
-
+    if task == 'npp':
+        if sampling == 'uniform':
+            # select one edge per node
+            sampler = NeighborSampler(edge_indices,
+                                      sizes=[1],num_nodes=X.shape[0])
+            candidate_edge_indices = None
+        elif sampling == 'adversarial':
+            # identify highest value per node
+            sampler = None
+            candidate_edge_indices = identify_candidate_edges(node_indices.cpu().data.numpy(),
+                                                       edge_indices.cpu().data.numpy(),
+                                                       edge_sampling_values.cpu().data.numpy())
+    elif task == 'gpp':
+        num_nodes = ptr.max()
+        edge_item_indices = create_edge_item_mapping(ptr,edge_indices)
+        sampler = NeighborSampler(edge_item_indices,sizes=[1])
+        candidate_edge_indices = None
+        
+    
     causal_interv_loss = 0
     for intervention_no in range(n_interventions_per_node):
         
-        out = select_edges_to_prune(node_indices,parent_target_indices,sampler)
-        remaining_edge_indices,remaining_edge_attr,nodes_with_pruned_parents = out
+        # select & prune edges
+        pruned_e_id,mask = select_edges_to_prune(node_indices,edge_indices,
+                                                 sampler=sampler,edge_attr=edge_attr,
+                                                 sampling=sampling,
+                                                 candidate_edge_indices=candidate_edge_indices)
+        remaining_edge_indices,remaining_edge_attr = prune_edges(edge_indices,edge_attr,
+                                                                 pruned_e_id,mask)
+        
+    
+        if task == 'gpp':
+            nodes_to_evaluate = node_indices
             
+        elif task == 'npp':
+            nodes_to_evaluate = edge_indices[1,pruned_e_id]
+        
+        # compute causal effect
         causal_effect = compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
-                                              remaining_edge_attr,nodes_with_pruned_parents,
-                                              pred_criterion)
+                                              remaining_edge_attr,nodes_to_evaluate,
+                                              pred_criterion,task=task,ptr=ptr)
         
         # weight loss function
         if weight_by_degree:
             from collections import Counter
             
-            counts = Counter(parent_target_indices.data.numpy()[1])
+            counts = Counter(edge_indices.data.numpy()[1])
             w = np.array([counts[n] for n in nodes_with_pruned_parents.data.numpy()])
-            w = torch.FloatTensor(w).to(parent_target_indices.device)
+            w = torch.FloatTensor(w).to(edge_indices.device)
             
             bce_loss = nn.BCELoss(weight=w)
         else:
@@ -147,130 +158,3 @@ def compute_intervention_loss_ogb(model,X,node_indices,parent_target_indices,Y,p
             causal_interv_loss += interv_loss/n_interventions_per_node/n_attn_layers
         
     return causal_interv_loss
-
-def run_epoch_batch(epoch_no,model,X,edge_indices,Y,model_type='causal',
-                    optimizer=None,node_indices=None,edge_attr=None,device=0,
-                    batch_size=15000,verbose=True,train=True,
-                    pred_criterion=NegativeCosineSimilarity(),
-                    edge_loss_weights=None,direction_loss=False,
-                    intervention_loss=False,
-                    lam_causal=1,n_interventions_per_node=10):
-        
-    np.random.seed(epoch_no)
-    torch.manual_seed(epoch_no)
-    
-    start = time.time()
-    total_loss = 0
-    total_pred_loss = 0
-    total_intervention_loss = 0
-    
-    model = model.to(device)
-    X = X.to(device)
-    Y = Y.to(device)
-    
-    neighSampler = NeighborSampler(edge_indices,sizes=[-1],
-                                   num_nodes=X.shape[0])
-
-    weight_by_degree = 'wbd' in model_type
-    
-    if node_indices is None:
-        node_indices = torch.arange(X.shape[0])
-    
-    if train:
-        # permute node indices if training
-        node_indices = node_indices[torch.randperm(node_indices.shape[0])]
-    
-    preds_list = []
-    for i in range(0,node_indices.shape[0],batch_size):
-
-        # identify parent + child nodes of node indices
-        out = neighSampler.sample(node_indices[i:i+batch_size])
-        parent_target_indices = edge_indices[:,out[2].e_id].to(device)
-                
-        sampled_edge_attr = None if edge_attr is None else edge_attr[out[2].e_id].to(device)
-        
-        # node-level predictions
-        preds,attn_weights = model(X,parent_target_indices,sampled_edge_attr)
-        
-        if train:
-            
-            # prediction loss
-            pred_loss = pred_criterion(preds[node_indices[i:i+batch_size]],
-                                       Y[node_indices[i:i+batch_size]]).mean()
-
-            # causal intervention loss
-            causal_interv_loss = 0
-            if intervention_loss:
-                causal_interv_loss = compute_intervention_loss_ogb(
-                                        model,X,node_indices[i:i+batch_size],
-                                        parent_target_indices,Y,preds,attn_weights,
-                                        device=device,edge_attr=sampled_edge_attr,
-                                        pred_criterion=pred_criterion,
-                                        weight_by_degree=weight_by_degree,
-                                        n_interventions_per_node=n_interventions_per_node)
-            
-            batch_loss = pred_loss + lam_causal*causal_interv_loss + causal_dir_loss
-            
-            if 'adversarial' in model_type:
-                 attn_weights.retain_grad()
-                
-            optimizer.zero_grad()
-            batch_loss.backward()
-            optimizer.step()
-            
-            if 'adversarial' in model_type:
-                attn_grads = attn_weights.grad.mean(1)
-            
-            total_loss += batch_loss.cpu().data.numpy()
-            total_pred_loss += pred_loss.cpu().data.numpy()
-            total_intervention_loss += lam_causal*causal_interv_loss
-            
-        else:
-            preds_list.append(preds[node_indices[i:i+batch_size]].detach())
-                    
-    end = time.time()
-    
-    if verbose and epoch_no % 5 == 0:
-        mode = 'train' if train else 'test'
-        print_str = 'Epoch {} ({:.5f} seconds)'.format(
-            epoch_no,end-start)
-        if train:
-            print_str += ': total loss {:.5f}, pred loss {:.5f}'.format(total_loss,
-                                                                        total_pred_loss)
-            if intervention_loss:
-                print_str += ', interv loss {:.5f}'.format(total_intervention_loss)
-        print(print_str)
-        
-    loss_dict = {'total_loss': total_loss,
-                 'pred_loss': total_pred_loss,
-                 'intervention loss': total_intervention_loss
-                 }
-    preds = None if train else torch.cat(preds_list)
-    
-    return loss_dict,preds
-
-def train_model(model,X,edge_indices,Y,model_type,optimizer,device,
-                node_indices=None,
-                edge_attr=None,num_epochs=10,edge_loss_weights=None,
-                direction_loss=False,intervention_loss=False,
-                lam_causal=1,n_interventions_per_node=10,
-                early_stop=True,pred_criterion=NegativeCosineSimilarity(),tol=1e-5,verbose=True):
-    
-    past_loss = 1e10
-    for epoch_no in range(num_epochs):
-         
-        loss_dict,_ = run_epoch_batch(epoch_no,model,X,edge_indices,Y,model_type,optimizer,
-                                         node_indices=node_indices,
-                                         edge_attr=edge_attr,device=device,train=True,
-                                         pred_criterion=pred_criterion,
-                                         edge_loss_weights=edge_loss_weights,
-                                         verbose=verbose,direction_loss=direction_loss,
-                                         intervention_loss=intervention_loss,
-                                         lam_causal=lam_causal,
-                                         n_interventions_per_node=n_interventions_per_node)
-        
-        current_loss = loss_dict['total_loss']
-        if early_stop and abs(past_loss - current_loss)/abs(past_loss) < tol:
-            break
-            
-        past_loss = current_loss
