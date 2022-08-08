@@ -3,6 +3,7 @@ import time
 
 import torch
 import torch.nn as nn
+from torch_geometric.utils import negative_sampling
 from torch_geometric.loader import NeighborSampler
 
 from utils import *
@@ -77,7 +78,7 @@ def run_epoch_batch(epoch_no,model,X,edge_indices,Y,model_type='causal',
                                         pred_criterion=pred_criterion,sampling=sampling,
                                         edge_sampling_values=edge_sampling_values,
                                         weight_by_degree=weight_by_degree,
-                                        n_interventions_per_node=n_interventions_per_node)
+                                        n_interventions_per_node=n_interventions_per_node,)
             
             batch_loss = pred_loss + lam_causal*causal_interv_loss #+ causal_dir_loss
                 
@@ -187,17 +188,32 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
         batch = batch.to(device)
         
         X = batch.x
-        Y = batch.y
         batch_edge_index = batch.edge_index
-        batch_edge_attr = batch.edge_attr
+        batch_edge_attr = batch.edge_attr if hasattr(batch, 'edge_attr') else None
         
+        if task == 'npp' or task == 'gpp':
+            Y = batch.y
+        elif task == 'lpp':
+            batch_negative_edge_index = negative_sampling(batch_edge_index)
+            Y = torch.cat([torch.ones(batch_edge_index.size(1)),
+                           torch.zeros(batch_edge_index.size(1))])
+            batch_edge_index = toch.cat([batch_edge_index,batch_negative_edge_index],
+                                        dim=1) 
+
         # node-level predictions
         if task == 'npp':
             batch_ptr = None
+            edge_indices_pred = None
             preds,attn_weights = model(X,batch_edge_index,batch_edge_attr)
         elif task == 'gpp':
             batch_ptr = batch.ptr #.to(device)
+            edge_indices_pred = None
             preds,attn_weights = model(X,batch_edge_index,batch_ptr,batch_edge_attr)
+        elif task == 'lpp':
+            batch_ptr = None
+            edge_indices_pred = batch.
+            preds,attn_weights = model(X,batch_edge_index,edge_indices_pred,
+                                       batch_edge_attr)
             
         if train:
             
@@ -232,7 +248,8 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                                         edge_sampling_values=edge_sampling_values,
                                         weight_by_degree=weight_by_degree,
                                         n_interventions_per_node=n_interventions_per_node,
-                                        task=task,ptr=batch_ptr)
+                                        task=task,ptr=batch_ptr,
+                                        edge_indices_pred=edge_indices_pred)
             
             batch_loss = pred_loss + lam_causal*causal_interv_loss
             
