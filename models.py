@@ -1,11 +1,20 @@
 import torch
 import torch.nn as nn
-from torch_geometric.nn.conv import GATConv,GATv2Conv,TransformerConv
+from torch_geometric.nn.conv import GCNConv,GATConv,GATv2Conv,TransformerConv
 from torch_geometric.utils import remove_self_loops
 from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
 
-from utils import *
+from utils import aggregate_using_ptr
+      
+class GCNConvBase(nn.Module):
+    def __init__(self,model_type,dim_in,dim_out):
+        super(GCNConvBase, self).__init__()
 
+        self.gcn = GCNConv(dim_in,dim_out,add_self_loops=False)
+    
+    def forward(self,x,edge_index):
+        return self.gcn(x,edge_index),(None,None)
+        
 class GATBase(nn.Module):
     def __init__(self,model_type,dim_in,dim_hidden,dim_out,
                  heads=3,n_layers=1,edge_dim=None):
@@ -34,10 +43,14 @@ class GATBase(nn.Module):
                 gat = TransformerConv(dim_hidden,dim_hidden,
                                          heads=heads,
                                          edge_dim=edge_dim,concat=False)
+            elif 'gcnconv' in model_type:
+                gat = GCNConvBase(dim_in,dim_out)
+                
             setattr(self,'gat_{}'.format(n+1),gat)
         
     def forward(self):
         pass
+
 
 class GATNode(GATBase):
     def __init__(self,model_type,dim_in,dim_hidden,dim_out,
@@ -119,12 +132,13 @@ class GATMolecule(nn.Module):
         
         self.gatgraph = GATGraph(model_type,dim_hidden,dim_hidden,dim_out,
                                  heads,n_layers,edge_dim)
-        self.linear_final = nn.Linear(dim_hidden*2,dim_out,bias=True)
-        self.leakyrelu = nn.LeakyReLU()
+        self.sigmoid = nn.Sigmoid()
         
     def forward(self,X,edge_indices,ptr,edge_attr):
         
         atom_emb = self.atom_encoder(X)
         edge_emb = self.bond_encoder(edge_attr)
                 
-        return self.gatgraph(atom_emb,edge_indices,ptr,edge_emb)
+        out,attn_weights_list = self.gatgraph(atom_emb,edge_indices,ptr,edge_emb)
+
+        return self.sigmoid(out),attn_weights_list

@@ -1,14 +1,15 @@
 import numpy as np
 import os
 import pandas as pd
-from typing import Optional, Tuple
 import math
 
 import torch
 import torch.nn as nn
 
-from torch_geometric.loader import DataLoader
+from torch_geometric.loader import DataLoader,NeighborLoader
     
+ROOT_DIR = '/home/sandbox/workspace/sequence-graphs/data/'
+
 def positionalencoding1d(d_model, length):
     """
     :param d_model: dimension of the model
@@ -99,8 +100,6 @@ class AdversarialSampler_v2:
         out = self.candidate_sampler.sample(node_indices)[2]
         return self.candidate_e_id[out.e_id]
     
-ROOT_DIR = '/home/sandbox/workspace/sequence-graphs/data/'
-
 def load_ogb_splits(dataset):
     
     if 'ogb' in dataset:        
@@ -198,13 +197,56 @@ def load_ogb_data(dataset):
 def load_dataloader(dataset_name,batch_size=256):
                 
     if 'ogbn' in dataset_name:
+
+        from ogb.nodeproppred import PygNodePropPredDataset
+
         dataset = PygNodePropPredDataset(name = dataset_name, 
                                           root = os.path.join(ROOT_DIR,'ogb_npp'))
+        split_idx = dataset.get_idx_split()
+        
+        if 'arxiv' in dataset_name:
+
+            # positional encoding of paper years
+            max_node_year = dataset.data.node_year.data.numpy().max()
+            min_node_year = dataset.data.node_year.data.numpy().min()
+        
+            pos_encoding = positionalencoding1d(16,max_node_year-min_node_year+1)
+            year_src_enc = max_node_year-dataset.data.node_year[dataset.data.edge_index[0]].squeeze()
+            year_target_enc = max_node_year-dataset.data.node_year[dataset.data.edge_index[1]].squeeze()
+            dataset.data.edge_attr = pos_encoding[year_src_enc]-pos_encoding[year_target_enc]
+            dataset.data.y = dataset.data.y.float()
+            
+        train_loader = NeighborLoader(dataset.data,num_neighbors=[-1], 
+                                      input_nodes=split_idx['train'], 
+                                      batch_size=batch_size,shuffle=True)
+        valid_loader = NeighborLoader(dataset.data,num_neighbors=[-1],
+                                      input_nodes=split_idx['valid'],
+                                      batch_size=batch_size,shuffle=False)
+        test_loader = NeighborLoader(dataset.data,num_neighbors=[-1],
+                                     input_nodes=split_idx['test'],
+                                     batch_size=batch_size,shuffle=False)
+        
+    elif dataset_name in ['Cora','CiteSeer','PubMed']:
+        
+        dataset_dir = os.path.join(ROOT_DIR,'planetoid',dataset_name)
+        data,_ = torch.load(os.path.join(dataset_dir,'processed','data.pt'))
+        data.y = data.y #.unsqueeze(-1).float()
+        
+        train_idx = data.train_mask.nonzero(as_tuple=False).view(-1)
+        valid_idx = data.val_mask.nonzero(as_tuple=False).view(-1)
+        test_idx = data.test_mask.nonzero(as_tuple=False).view(-1)
+
+        train_loader = NeighborLoader(data,num_neighbors=[-1],input_nodes=train_idx, 
+                                      batch_size=batch_size,shuffle=True)
+        valid_loader = NeighborLoader(data,num_neighbors=[-1],input_nodes=valid_idx,
+                                      batch_size=batch_size,shuffle=False)
+        test_loader = NeighborLoader(data,num_neighbors=[-1],input_nodes=test_idx,
+                                     batch_size=batch_size,shuffle=False)
+        
     elif 'ogbg' in dataset_name:
         
         from ogb.graphproppred import PygGraphPropPredDataset
-        from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
-
+        
         dataset = PygGraphPropPredDataset(name = dataset_name, 
                                           root = os.path.join(ROOT_DIR,'ogb_gpp'))
         dataset.data.y = dataset.data.y.float()
@@ -216,7 +258,60 @@ def load_dataloader(dataset_name,batch_size=256):
                                   batch_size=batch_size, shuffle=False)
         test_loader = DataLoader(dataset[split_idx["test"]], 
                                  batch_size=batch_size, shuffle=False)
-        
+    
+    elif 'ogbl' in dataset_name:
+
+        from ogb.linkproppred import PygLinkPropPredDataset
+
+        dataset = PygLinkPropPredDataset(name = "ogbl-{}".format(dataset_name), 
+                                         root = os.path.join(ROOT_DIR,'ogb_lpp'))
+        dataset.data.n_id = torch.arange(dataset.data.num_nodes)
+
+        split_idx = dataset.get_edge_split()
+
+        train_dataset = dataset.copy()
+        train_dataset.data.edge_index = split_idx['train']['edge'].T
+
+        valid_dataset = dataset.copy()
+        valid_pos_edges = split_idx['valid']['edge']
+        valid_neg_edges = split_idx['valid']['edge_neg']
+
+        valid_dataset.data.edge_index = split_idx['train']['edge'].T
+        valid_dataset.data.edge_label_index = torch.cat([valid_pos_edges,
+                                                   valid_neg_edges],dim=0).T
+        valid_dataset.data.edge_label = torch.cat([torch.ones(valid_pos_edges.size(0)),
+                                          torch.zeros(valid_neg_edges.size(0))])
+
+        test_dataset = dataset.copy()
+        test_pos_edges = split_idx['test']['edge']
+        test_neg_edges = split_idx['test']['edge_neg']
+
+        test_dataset.data.edge_index = split_idx['train']['edge'].T
+        test_dataset.data.edge_label_index = torch.cat([test_pos_edges,
+                                                   test_neg_edges],dim=0).T
+        test_dataset.data.edge_label = torch.cat([torch.ones(test_pos_edges.size(0)),
+                                          torch.zeros(test_neg_edges.size(0))])
+
+
+        train_loader = NeighborLoader(train_dataset.data,
+                                      num_neighbors=[-1],
+                                      input_nodes=torch.unique(train_dataset.data.edge_index[0]),
+                                      batch_size=batch_size,
+                                      shuffle=True)
+
+        valid_loader = NeighborLoader(valid_dataset.data,
+                                      num_neighbors=[-1],
+                                      input_nodes=torch.unique(valid_dataset.data.edge_index[0]),
+                                      batch_size=batch_size,
+                                      shuffle=False)
+
+        test_loader = NeighborLoader(test_dataset.data,
+                                      num_neighbors=[-1],
+                                      input_nodes=torch.unique(test_dataset.data.edge_index[0]),
+                                      batch_size=batch_size,
+                                      shuffle=False)
+
+
     return train_loader,valid_loader,test_loader
 
 def aggregate_using_ptr(data,ptr,op='sum'):

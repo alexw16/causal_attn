@@ -39,11 +39,21 @@ def main():
     print('Loading data...')
     
     if 'ogbg-mol' in args.dataset:
-    
         train_loader,_,_ = load_dataloader(args.dataset,batch_size=512)
         dim_in = args.dim_hidden #train_loader.dataset.data.x.shape[1]
         dim_out = train_loader.dataset.data.y.shape[1]
         edge_dim = args.dim_hidden #train_loader.dataset.data.edge_attr.shape[1]
+        
+        if any(x in args.dataset for x in ['molesol','molfreesolv','mollipo']):
+            pred_criterion = nn.MSELoss(reduction='none')
+        else:
+            pred_criterion = nn.BCELoss(reduction='none')
+    
+    elif 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
+        train_loader,_,_ = load_dataloader(args.dataset,batch_size=512)
+        dim_in = train_loader.data.x.shape[1]
+        dim_out = train_loader.data.y.long().data.numpy().max()+1
+        edge_dim = train_loader.data.edge_attr.shape[1] if train_loader.data.edge_attr is not None else None
         pred_criterion = nn.CrossEntropyLoss(reduction='none')
         
     else:
@@ -60,24 +70,25 @@ def main():
     torch.manual_seed(1)
     
     if 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
-        
         model = GATNode(args.model_type,dim_in,args.dim_hidden,dim_out,
                           heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
         model_causal = GATNode(args.model_type,dim_in,args.dim_hidden,dim_out,
                                  heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
+        task = 'npp'
         
     elif 'ogbg-mol' in args.dataset:
         model = GATMolecule(args.model_type,dim_in,args.dim_hidden,dim_out,
                           heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
         model_causal = GATMolecule(args.model_type,dim_in,args.dim_hidden,dim_out,
                                  heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
+        task = 'gpp'
         
     elif 'ogbg' in args.dataset:
-        
         model = GATGraph(args.model_type,dim_in,args.dim_hidden,dim_out,
                           heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
         model_causal = GATGraph(args.model_type,dim_in,args.dim_hidden,dim_out,
                                  heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
+        task = 'gpp'
         
     initial_learning_rate=0.01
     beta_1=0.9
@@ -107,17 +118,16 @@ def main():
         optimizer.load_state_dict(torch.load(os.path.join(model_dir,optimizer_file_name)))
         
     else:
-        if 'ogbg' in args.dataset:
+        if 1: #'ogb' in args.dataset:
             train_model_dataloader(model,train_loader,args.model_type,optimizer,device,
                            num_epochs=args.num_epochs,pred_criterion=pred_criterion,
                            intervention_loss=False,early_stop=args.early_stop,
-                           tol=args.tol,verbose=True,task='gpp')
+                           tol=args.tol,verbose=True,task=task)
 
         else:
             train_model(model,X,edge_indices,Y,args.model_type,optimizer,device,
                         node_indices=train_idx,
                         edge_attr=edge_attr,num_epochs=args.num_epochs,
-                        direction_loss=False,
                         intervention_loss=False,
                         early_stop=args.early_stop,tol=args.tol,verbose=True,
                         pred_criterion=pred_criterion)
@@ -137,17 +147,16 @@ def main():
                                                        args.dim_hidden,args.n_layers)
     if not os.path.exists(os.path.join(model_dir,model_file_name)):
         print('Continue training (baseline)...')
-        if 'ogbg' in args.dataset:
+        if 1: #'ogb' in args.dataset:
             train_model_dataloader(model,train_loader,args.model_type,optimizer,device,
                            num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
                            intervention_loss=False,early_stop=args.early_stop,
-                           tol=args.tol,verbose=True,task='gpp')
+                           tol=args.tol,verbose=True,task=task)
         else:
             train_model(model,X,edge_indices,Y,
                         args.model_type,optimizer,device,
                         node_indices=train_idx,
                         edge_attr=edge_attr,num_epochs=args.num_epochs_tuning,
-                        direction_loss=False,
                         intervention_loss=False,
                         early_stop=args.early_stop,tol=args.tol,verbose=True,
                         pred_criterion=pred_criterion)
@@ -156,20 +165,18 @@ def main():
         torch.save(model.state_dict(),os.path.join(model_dir,model_file_name))
     
     print('Continue training (causal)...')
-    direction_loss = 'dir' in args.model_type
     
-    if 'ogbg' in args.dataset:
-        train_model_dataloader(model,train_loader,args.model_type,optimizer,device,
+    if 1: #'ogb' in args.dataset:
+        train_model_dataloader(model_causal,train_loader,args.model_type,optimizer_causal,device,
                                num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
                                early_stop=args.early_stop,tol=args.tol,verbose=True,
                                intervention_loss=True,lam_causal=args.lam_causal,
-                               n_interventions_per_node=args.n_interventions,task='gpp')
+                               n_interventions_per_node=args.n_interventions,task=task)
     else:
         train_model(model_causal,X,edge_indices,Y,
                     args.model_type,optimizer_causal,device,
                     node_indices=train_idx,
                     edge_attr=edge_attr,num_epochs=args.num_epochs_tuning,
-                    direction_loss=direction_loss,
                     intervention_loss=True,
                     lam_causal=args.lam_causal,
                     early_stop=args.early_stop,tol=args.tol,verbose=True,
@@ -184,6 +191,8 @@ def main():
     torch.save(model_causal.state_dict(),os.path.join(model_dir,model_file_name))
 
     print('Total Time: {} seconds'.format(time.time()-start))
-
+    
 if __name__ == "__main__":
     main()
+    os._exit(1)
+  

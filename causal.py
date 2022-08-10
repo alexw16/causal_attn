@@ -56,7 +56,8 @@ def create_edge_item_mapping(ptr,edge_indices):
 
 def compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
                           edge_attr,node_indices,pred_criterion,
-                          task='npp',ptr=None,edge_indices_pred=None):
+                          task='npp',ptr=None,edge_indices_pred=None,
+                          loss_ratio=False):
     
     if task == 'npp':
         pred_loss = pred_criterion(preds[node_indices],
@@ -84,12 +85,19 @@ def compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
         interv_loss_adj = SparseTensor(row=edge_indices_pred[0],col=edge_indices_pred[1],
                                 value=interv_pred_loss)
         interv_pred_loss = loss_adj.mean(1)
-
-    causal_effect = (interv_pred_loss - pred_loss)/(1e-20 + pred_loss)
-    causal_effect = 1/(1+torch.exp(-1*(causal_effect-1)))
+        
+    if loss_ratio:
+        causal_effect = interv_pred_loss/(1e-20 + pred_loss)
+        causal_effect = 1/(1+torch.exp(-10*(causal_effect-1)))
+    else:
+        causal_effect = interv_pred_loss - pred_loss #/(1e-20 + pred_loss)
+        causal_effect = 1/(1+torch.exp(-1*(causal_effect-1)))
     causal_effect = causal_effect.detach()
     
-    return causal_effect
+    if causal_effect.dim() > 1:
+        causal_effect = causal_effect.mean(1)
+
+    return causal_effect.squeeze()
 
 def identify_candidate_edges(node_indices,edge_indices,edge_sampling_values):
     
@@ -107,7 +115,8 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
                               pred_criterion=nn.BCELoss(),
                               sampling='uniform',edge_sampling_values=None,
                               weight_by_degree=False,
-                              task='npp',ptr=None,edge_indices_pred=None):
+                              task='npp',ptr=None,edge_indices_pred=None,
+                              loss_ratio=False):
     
     sigmoid = nn.Sigmoid()
     
@@ -129,7 +138,6 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
         sampler = NeighborSampler(edge_item_indices,sizes=[1])
         candidate_edge_indices = None
         
-    
     causal_interv_loss = 0
     for intervention_no in range(n_interventions_per_node):
         
@@ -140,7 +148,6 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
                                                  candidate_edge_indices=candidate_edge_indices)
         remaining_edge_indices,remaining_edge_attr = prune_edges(edge_indices,edge_attr,
                                                                  pruned_e_id,mask)
-        
     
         if task == 'gpp':
             nodes_to_evaluate = node_indices
@@ -151,7 +158,8 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
         causal_effect = compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
                                               remaining_edge_attr,nodes_to_evaluate,
                                               pred_criterion,task=task,ptr=ptr,
-                                              edge_indices_pred=edge_indices_pred)
+                                              edge_indices_pred=edge_indices_pred,
+                                              loss_ratio=loss_ratio)
         
         # weight loss function
         if weight_by_degree:

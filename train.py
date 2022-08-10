@@ -4,6 +4,8 @@ import time
 import torch
 import torch.nn as nn
 from torch_geometric.utils import negative_sampling
+from torch_geometric.transforms import RandomLinkSplit
+
 from torch_geometric.loader import NeighborSampler
 
 from utils import *
@@ -13,7 +15,6 @@ def run_epoch_batch(epoch_no,model,X,edge_indices,Y,model_type='causal',
                     optimizer=None,node_indices=None,edge_attr=None,device=0,
                     batch_size=15000,verbose=True,train=True,
                     pred_criterion=nn.BCELoss(),
-                    direction_loss=False,
                     intervention_loss=False,
                     lam_causal=1,n_interventions_per_node=10):
         
@@ -70,6 +71,7 @@ def run_epoch_batch(epoch_no,model,X,edge_indices,Y,model_type='causal',
                 
             # causal intervention loss
             causal_interv_loss = 0
+            loss_ratio = 'ratio' in model_type
             if intervention_loss:
                 causal_interv_loss = compute_intervention_loss(
                                         model,X,node_indices[i:i+batch_size],
@@ -78,7 +80,8 @@ def run_epoch_batch(epoch_no,model,X,edge_indices,Y,model_type='causal',
                                         pred_criterion=pred_criterion,sampling=sampling,
                                         edge_sampling_values=edge_sampling_values,
                                         weight_by_degree=weight_by_degree,
-                                        n_interventions_per_node=n_interventions_per_node,)
+                                        n_interventions_per_node=n_interventions_per_node,
+                                        loss_ratio=loss_ratio)
             
             batch_loss = pred_loss + lam_causal*causal_interv_loss #+ causal_dir_loss
                 
@@ -119,7 +122,7 @@ def run_epoch_batch(epoch_no,model,X,edge_indices,Y,model_type='causal',
 
 def train_model(model,X,edge_indices,Y,model_type,optimizer,device,
                 node_indices=None,edge_attr=None,num_epochs=10,
-                direction_loss=False,intervention_loss=False,
+                intervention_loss=False,
                 lam_causal=1,n_interventions_per_node=10,early_stop=True,
                 pred_criterion=nn.BCELoss(),tol=1e-5,verbose=True):
     
@@ -129,7 +132,7 @@ def train_model(model,X,edge_indices,Y,model_type,optimizer,device,
         loss_dict,_ = run_epoch_batch(epoch_no,model,X,edge_indices,Y,model_type,optimizer,
                                       node_indices=node_indices,edge_attr=edge_attr,device=device,
                                       train=True,pred_criterion=pred_criterion,
-                                      verbose=verbose,direction_loss=direction_loss,
+                                      verbose=verbose,
                                       intervention_loss=intervention_loss,
                                       lam_causal=lam_causal,
                                       n_interventions_per_node=n_interventions_per_node)
@@ -193,26 +196,31 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
         
         if task == 'npp' or task == 'gpp':
             Y = batch.y
+            batch_edge_index_pred  = None
         elif task == 'lpp':
-            batch_negative_edge_index = negative_sampling(batch_edge_index)
-            Y = torch.cat([torch.ones(batch_edge_index.size(1)),
-                           torch.zeros(batch_edge_index.size(1))])
-            batch_edge_index = toch.cat([batch_edge_index,batch_negative_edge_index],
-                                        dim=1) 
+            if train:
+                is_undirected = False
+                transform = RandomLinkSplit(num_val=0,num_test=0.2,
+                                            neg_sampling_ratio=1.0,
+                                            is_undirected=is_undirected)
+                _,_,test_data = transform(batch)
+                Y = test_data.edge_label
+                batch_edge_index = test_data.edge_index
+                batch_edge_index_pred = test_data.edge_label_index
+
+            else:
+                pass #NeighborLoader(batch,)
 
         # node-level predictions
         if task == 'npp':
             batch_ptr = None
-            edge_indices_pred = None
             preds,attn_weights = model(X,batch_edge_index,batch_edge_attr)
         elif task == 'gpp':
             batch_ptr = batch.ptr #.to(device)
-            edge_indices_pred = None
             preds,attn_weights = model(X,batch_edge_index,batch_ptr,batch_edge_attr)
         elif task == 'lpp':
             batch_ptr = None
-            edge_indices_pred = batch.
-            preds,attn_weights = model(X,batch_edge_index,edge_indices_pred,
+            preds,attn_weights = model(X,batch_edge_index,batch_edge_index_pred,
                                        batch_edge_attr)
             
         if train:
@@ -233,6 +241,7 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                 
             # causal intervention loss
             causal_interv_loss = 0
+            loss_ratio = 'ratio' in model_type
             if intervention_loss:
                 
                 if task == 'npp':
@@ -249,20 +258,14 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                                         weight_by_degree=weight_by_degree,
                                         n_interventions_per_node=n_interventions_per_node,
                                         task=task,ptr=batch_ptr,
-                                        edge_indices_pred=edge_indices_pred)
+                                        edge_indices_pred=batch_edge_index_pred,
+                                        loss_ratio=loss_ratio)
             
             batch_loss = pred_loss + lam_causal*causal_interv_loss
             
             optimizer.zero_grad()
             batch_loss.backward()
             optimizer.step()
-            
-#             X = X.detach()
-#             Y = Y.detach()
-#             batch_edge_index = batch_edge_index.detach()
-#             batch_edge_attr = batch_edge_attr.detach()
-#             batch_ptr = batch_ptr.detach()
-#             batch_loss = batch_loss.detach()
             
             # if 'adversarial' in model_type:
             #     attn_grads = attn_weights.grad.mean(1)
@@ -272,7 +275,7 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
             total_intervention_loss += lam_causal*causal_interv_loss #.detach().cpu().data.numpy()
             
         else:
-            preds_list.append(preds[node_indices[i:i+batch_size]].detach())
+            preds_list.append(preds.detach())
                     
     end = time.time()
     
