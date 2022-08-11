@@ -7,12 +7,12 @@ from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
 from utils import aggregate_using_ptr
       
 class GCNConvBase(nn.Module):
-    def __init__(self,model_type,dim_in,dim_out):
+    def __init__(self,dim_in,dim_out):
         super(GCNConvBase, self).__init__()
 
         self.gcn = GCNConv(dim_in,dim_out,add_self_loops=False)
     
-    def forward(self,x,edge_index):
+    def forward(self,x,edge_index,edge_attr,return_attention_weights):
         return self.gcn(x,edge_index),(None,None)
         
 class GATBase(nn.Module):
@@ -44,7 +44,7 @@ class GATBase(nn.Module):
                                          heads=heads,
                                          edge_dim=edge_dim,concat=False)
             elif 'gcnconv' in model_type:
-                gat = GCNConvBase(dim_in,dim_out)
+                gat = GCNConvBase(dim_hidden,dim_hidden)
                 
             setattr(self,'gat_{}'.format(n+1),gat)
         
@@ -81,19 +81,38 @@ class GATNode(GATBase):
 class GATLink(GATBase):
     def __init__(self,model_type,dim_in,dim_hidden,dim_out,
                  heads=3,n_layers=1,edge_dim=None):
-        super(GATLink, self).__init__()
+        super(GATLink, self).__init__(model_type,dim_in,dim_hidden,dim_out,
+                 heads,n_layers,edge_dim)
         self.gatnode = GATNode(model_type,dim_in,dim_hidden,dim_out,
                  heads,n_layers,edge_dim)
         self.trans_emb = nn.Parameter(torch.ones(dim_hidden),
             requires_grad=True)
+        self.sigmoid = nn.Sigmoid()
         
     def forward(self,X,edge_indices,edge_indices_pred,edge_attr=None):
         
         node_emb,attn_weights_list = self.gatnode(X,edge_indices,edge_attr)
         i,j = edge_indices_pred[0],edge_indices_pred[1]
+        out = ((node_emb[i] + self.trans_emb)*node_emb[j]).sum(1)
+        out = self.sigmoid(out)
+        
+        return out,attn_weights_list
     
-        return ((node_emb[i] + self.trans_emb)*node_emb[j]).sum(1)
+class GATLinkEmbed(GATBase):
+    def __init__(self,model_type,dim_in,dim_hidden,dim_out,
+                 heads=3,n_layers=1,edge_dim=None,n_embeddings=None):
+        super(GATLinkEmbed, self).__init__(model_type,dim_in,dim_hidden,dim_out,
+                 heads,n_layers,edge_dim)
+        self.embed = nn.Embedding(n_embeddings,dim_hidden)
+        self.gatlink = GATLink(model_type,dim_in,dim_hidden,dim_out,
+                 heads,n_layers,edge_dim)
+        
+    def forward(self,X,edge_indices,edge_indices_pred,edge_attr=None):
+        
+        embed = self.embed(X).squeeze()
 
+        return self.gatlink(embed,edge_indices,edge_indices_pred,edge_attr)
+        
 class GATGraph(GATBase):
     def __init__(self,model_type,dim_in,dim_hidden,dim_out,
                  heads=3,n_layers=1,edge_dim=None):

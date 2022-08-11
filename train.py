@@ -198,9 +198,9 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
             Y = batch.y
             batch_edge_index_pred  = None
         elif task == 'lpp':
+            is_undirected = True
             if train:
-                is_undirected = False
-                transform = RandomLinkSplit(num_val=0,num_test=0.2,
+                transform = RandomLinkSplit(num_val=0,num_test=0.1,
                                             neg_sampling_ratio=1.0,
                                             is_undirected=is_undirected)
                 _,_,test_data = transform(batch)
@@ -209,7 +209,9 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                 batch_edge_index_pred = test_data.edge_label_index
 
             else:
-                pass #NeighborLoader(batch,)
+                Y = batch.edge_label
+                batch_edge_index = batch.edge_index
+                batch_edge_index_pred = batch.edge_label_index
 
         # node-level predictions
         if task == 'npp':
@@ -248,6 +250,8 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                     node_indices = torch.arange(batch_edge_index.max()+1)
                 elif task == 'gpp':
                     node_indices = torch.arange(Y.size(0))
+                elif task == 'lpp':
+                    node_indices = torch.arange(batch_edge_index.max()+1)
                     
                 causal_interv_loss = compute_intervention_loss(
                                         model,X,node_indices,

@@ -1,0 +1,227 @@
+import pandas as pd
+import numpy as np
+import argparse
+import time
+from scipy.io import mmread
+import os
+
+import torch.nn as nn
+
+from train import *
+from utils import *
+from models import *
+from causal import *
+        
+def instantiate_model(dataset_name,model_type,dim_in,dim_hidden,dim_out,
+                      heads,n_layers,edge_dim,n_embeddings=None):
+    
+    if 'ogbn' in dataset_name or dataset_name in ['Cora','CiteSeer','PubMed']:
+        model = GATNode(model_type,dim_in,dim_hidden,dim_out,
+                          heads,n_layers,edge_dim)
+
+    elif 'ogbg-mol' in dataset_name:
+        model = GATMolecule(model_type,dim_in,dim_hidden,dim_out,
+                          heads,n_layers,edge_dim)
+
+    elif 'ogbg' in dataset_name:
+        model = GATGraph(model_type,dim_in,dim_hidden,dim_out,
+                         heads,n_layers,edge_dim)
+
+    elif 'ogbl' in dataset_name:
+        if dataset_name == 'ogbl-ddi':
+            model = GATLinkEmbed(model_type,dim_in,dim_hidden,dim_out,
+                                 heads,n_layers,edge_dim,n_embeddings)
+        else:
+            model = GATLink(model_type,dim_in,dim_hidden,dim_out,
+                            heads,n_layers,edge_dim)
+    
+    return model
+
+def main():
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-ds', dest='dataset',type=str)
+    parser.add_argument('-sd', dest='save_dir',type=str)
+    parser.add_argument('-mt', dest='model_type',type=str)
+    parser.add_argument('-hd', dest='dim_hidden',type=int)
+    parser.add_argument('-K', dest='K',type=int)
+    parser.add_argument('-nl', dest='n_layers',type=int,default=1)
+    parser.add_argument('-ne', dest='num_epochs',type=int)
+    parser.add_argument('-net', dest='num_epochs_tuning',type=int)
+    parser.add_argument('-d', dest='device',default='cpu')
+    parser.add_argument('-lc', dest='lam_causal',type=float,default=1)
+    parser.add_argument('-tol', dest='tol',type=float,default=1e-5)
+    parser.add_argument('-es', dest='early_stop',type=int,default=1)
+    parser.add_argument('-ni', dest='n_interventions',type=int,default=10)
+    parser.add_argument('-at', dest='attn_thresh',type=float,default=0.1)
+
+    args = parser.parse_args()
+    
+    model_dir = os.path.join(args.save_dir,'models')
+
+    rewire_model_dir = os.path.join(args.save_dir,'models_rewire')
+    if not os.path.exists(rewire_model_dir):
+        os.mkdir(rewire_model_dir)
+        
+    print('Loading data...')
+    
+    if 'ogbg-mol' in args.dataset:
+        batch_size=512
+    elif 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
+        batch_size=5000
+    elif 'ogbl' in args.dataset:
+        batch_size=10000
+        
+    if 'ogbg-mol' in args.dataset:
+        train_loader,_,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+    elif 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
+        train_loader,_,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+    elif 'ogbl' in args.dataset:
+        train_loader,_,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+
+    dim_in,dim_out,edge_dim,pred_criterion = get_dataset_params(args.dataset,train_loader,args.dim_hidden)
+    
+    print('Initializing Models...')
+    np.random.seed(1)
+    torch.manual_seed(1)
+
+    if 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
+        task = 'npp'
+    elif 'ogbg' in args.dataset:
+        task = 'gpp'
+    elif 'ogbl' in args.dataset:
+        task = 'lpp'
+        
+    initial_learning_rate=0.01
+    beta_1=0.9
+    beta_2=0.999
+    
+    start = time.time()
+    
+    if args.device != 'cpu':
+        device = int(args.device)
+        torch.cuda.set_device(device)
+    else:
+        device = 'cpu'
+        
+    print('Device: {}'.format(device))
+    
+    
+    model_file_name = '{}.{}hd.nl{}.gcn.base.pt'.format(args.model_type,
+                                                        args.dim_hidden,
+                                                        args.n_layers)
+    if not os.path.exists(os.path.join(rewire_model_dir,model_file_name)):
+        print('Training baseline GCN model...')
+        n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
+        model_gcn = instantiate_model(args.dataset,'gcnconv',dim_in,args.dim_hidden,dim_out,
+                                      heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,
+                                      n_embeddings=n_embeddings)
+        optimizer = torch.optim.Adam(params=model_gcn.parameters(), 
+                        lr=initial_learning_rate, betas=(beta_1, beta_2))        
+        train_model_dataloader(model_gcn,train_loader,args.model_type,optimizer,device,
+                               num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
+                               early_stop=args.early_stop,tol=args.tol,verbose=True,
+                               intervention_loss=False,task=task)
+
+        torch.save(model_gcn.state_dict(),os.path.join(rewire_model_dir,model_file_name))
+        
+    # baseline model
+    model_file_name = '{}.base.{}heads.{}hd.nl{}.pt'.format(args.model_type,args.K,
+                                                       args.dim_hidden,args.n_layers)
+    rewire_model_file_name = '{}.base.{}heads.{}hd.nl{}.gcn.thresh{}.pt'.format(args.model_type,args.K,
+                                                       args.dim_hidden,args.n_layers,args.attn_thresh)
+    
+    if not os.path.exists(os.path.join(rewire_model_dir,rewire_model_file_name)):
+
+        if 'ogbg-mol' in args.dataset:
+            train_loader,_,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+        elif 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
+            train_loader,_,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+        elif 'ogbl' in args.dataset:
+            train_loader,_,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+        
+        # rewiring graph
+        n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
+        model = instantiate_model(args.dataset,args.model_type,dim_in,args.dim_hidden,dim_out,
+                                      heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,
+                                      n_embeddings=n_embeddings)
+        model.load_state_dict(torch.load(os.path.join(model_dir,model_file_name)))
+        
+        _,attn_weights_list = model(train_loader.data.x,train_loader.data.edge_index,train_loader.data.edge_attr)
+        attn_weights = attn_weights_list[0]
+        e_id = torch.nonzero(attn_weights.mean(1) > args.attn_thresh).squeeze()
+        print('Rewiring graph: {} of {} edges retained'.format(e_id.size(0),attn_weights.size(0)))
+        rewired_train_loader = generate_rewired_dataloader(train_loader,e_id,shuffle=True,
+                                                           batch_size=batch_size)
+        
+        print('Training GCN model: rewired graph (baseline attention)...')
+        n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
+        model_gcn = instantiate_model(args.dataset,'gcnconv',dim_in,args.dim_hidden,dim_out,
+                                      heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,
+                                      n_embeddings=n_embeddings)
+        optimizer = torch.optim.Adam(params=model_gcn.parameters(), 
+                        lr=initial_learning_rate, betas=(beta_1, beta_2))
+        
+        train_model_dataloader(model_gcn,rewired_train_loader,args.model_type,optimizer,device,
+                               num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
+                               early_stop=args.early_stop,tol=args.tol,verbose=True,
+                               intervention_loss=False,task=task)
+        
+        # save model
+        torch.save(model_gcn.state_dict(),os.path.join(rewire_model_dir,rewire_model_file_name))
+    
+    
+    model_file_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}.pt'.format(args.model_type,args.K,
+                                                                args.dim_hidden,args.n_layers,
+                                                                args.lam_causal,
+                                                                args.n_interventions)
+    rewire_model_file_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}.gcn.thresh{}.pt'.format(args.model_type,args.K,
+                                                                args.dim_hidden,args.n_layers,
+                                                                args.lam_causal,
+                                                                args.n_interventions,args.attn_thresh)
+    
+    if not os.path.exists(os.path.join(rewire_model_dir,rewire_model_file_name)):
+        
+        if 'ogbg-mol' in args.dataset:
+            train_loader,_,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+        elif 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
+            train_loader,_,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+        elif 'ogbl' in args.dataset:
+            train_loader,_,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+        
+        # rewiring graph
+        n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
+        model = instantiate_model(args.dataset,args.model_type,dim_in,args.dim_hidden,dim_out,
+                                      heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,
+                                      n_embeddings=n_embeddings)
+        model.load_state_dict(torch.load(os.path.join(model_dir,model_file_name)))
+        
+        _,attn_weights_list = model(train_loader.data.x,train_loader.data.edge_index,train_loader.data.edge_attr)
+        attn_weights = attn_weights_list[0]
+        e_id = torch.nonzero(attn_weights.mean(1) > args.attn_thresh).squeeze()
+        print('Rewiring graph: {} of {} edges retained'.format(e_id.size(0),attn_weights.size(0)))
+        rewired_train_loader = generate_rewired_dataloader(train_loader,e_id,shuffle=True,
+                                                           batch_size=batch_size)
+        
+        print('Training GCN model: rewired graph (baseline attention)...')
+        n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
+        model_gcn = instantiate_model(args.dataset,'gcnconv',dim_in,args.dim_hidden,dim_out,
+                                      heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,
+                                      n_embeddings=n_embeddings)
+        optimizer = torch.optim.Adam(params=model_gcn.parameters(), 
+                        lr=initial_learning_rate, betas=(beta_1, beta_2))
+        
+        train_model_dataloader(model_gcn,rewired_train_loader,args.model_type,optimizer,device,
+                               num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
+                               early_stop=args.early_stop,tol=args.tol,verbose=True,
+                               intervention_loss=False,task=task)
+        
+        # save model
+        torch.save(model_gcn.state_dict(),os.path.join(rewire_model_dir,rewire_model_file_name))
+
+    print('Total Time: {} seconds'.format(time.time()-start))
+    
+if __name__ == "__main__":
+    main()
+    os._exit(1)
+  

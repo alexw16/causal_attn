@@ -12,6 +12,31 @@ from utils import *
 from models import *
 from causal import *
         
+def instantiate_model(dataset_name,model_type,dim_in,dim_hidden,dim_out,
+                      heads,n_layers,edge_dim,n_embeddings=None):
+    
+    if 'ogbn' in dataset_name or dataset_name in ['Cora','CiteSeer','PubMed']:
+        model = GATNode(model_type,dim_in,dim_hidden,dim_out,
+                          heads,n_layers,edge_dim)
+
+    elif 'ogbg-mol' in dataset_name:
+        model = GATMolecule(model_type,dim_in,dim_hidden,dim_out,
+                          heads,n_layers,edge_dim)
+
+    elif 'ogbg' in dataset_name:
+        model = GATGraph(model_type,dim_in,dim_hidden,dim_out,
+                         heads,n_layers,edge_dim)
+
+    elif 'ogbl' in dataset_name:
+        if dataset_name == 'ogbl-ddi':
+            model = GATLinkEmbed(model_type,dim_in,dim_hidden,dim_out,
+                                 heads,n_layers,edge_dim,n_embeddings)
+        else:
+            model = GATLink(model_type,dim_in,dim_hidden,dim_out,
+                            heads,n_layers,edge_dim)
+    
+    return model
+
 def main():
     
     parser = argparse.ArgumentParser()
@@ -40,55 +65,40 @@ def main():
     
     if 'ogbg-mol' in args.dataset:
         train_loader,_,_ = load_dataloader(args.dataset,batch_size=512)
-        dim_in = args.dim_hidden #train_loader.dataset.data.x.shape[1]
-        dim_out = train_loader.dataset.data.y.shape[1]
-        edge_dim = args.dim_hidden #train_loader.dataset.data.edge_attr.shape[1]
-        
-        if any(x in args.dataset for x in ['molesol','molfreesolv','mollipo']):
-            pred_criterion = nn.MSELoss(reduction='none')
-        else:
-            pred_criterion = nn.BCELoss(reduction='none')
-    
     elif 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
-        train_loader,_,_ = load_dataloader(args.dataset,batch_size=512)
-        dim_in = train_loader.data.x.shape[1]
-        dim_out = train_loader.data.y.long().data.numpy().max()+1
-        edge_dim = train_loader.data.edge_attr.shape[1] if train_loader.data.edge_attr is not None else None
-        pred_criterion = nn.CrossEntropyLoss(reduction='none')
-        
-    else:
-        train_idx,valid_idx,test_idx = load_ogb_splits(args.dataset)
-        X,edge_indices,Y,edge_attr,addl_params = load_ogb_data(args.dataset)
+        train_loader,_,_ = load_dataloader(args.dataset,batch_size=5000)
+    elif 'ogbl' in args.dataset:
+        train_loader,_,_ = load_dataloader(args.dataset,batch_size=10000)
 
-        edge_dim = addl_params['edge_dim']
-        dim_in = addl_params['dim_in']
-        dim_out = addl_params['dim_out']
-        pred_criterion = addl_params['pred_criterion']
+    dim_in,dim_out,edge_dim,pred_criterion = get_dataset_params(args.dataset,train_loader,args.dim_hidden)
+    
+#     else:
+#         train_idx,valid_idx,test_idx = load_ogb_splits(args.dataset)
+#         X,edge_indices,Y,edge_attr,addl_params = load_ogb_data(args.dataset)
+
+#         edge_dim = addl_params['edge_dim']
+#         dim_in = addl_params['dim_in']
+#         dim_out = addl_params['dim_out']
+#         pred_criterion = addl_params['pred_criterion']
     
     print('Initializing Models...')
     np.random.seed(1)
     torch.manual_seed(1)
     
+    n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
+    model = instantiate_model(args.dataset,args.model_type,dim_in,args.dim_hidden,dim_out,
+                              heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,
+                              n_embeddings=n_embeddings)
+    model_causal = instantiate_model(args.dataset,args.model_type,dim_in,args.dim_hidden,dim_out,
+                              heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,
+                              n_embeddings=n_embeddings)
+    
     if 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
-        model = GATNode(args.model_type,dim_in,args.dim_hidden,dim_out,
-                          heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
-        model_causal = GATNode(args.model_type,dim_in,args.dim_hidden,dim_out,
-                                 heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
         task = 'npp'
-        
-    elif 'ogbg-mol' in args.dataset:
-        model = GATMolecule(args.model_type,dim_in,args.dim_hidden,dim_out,
-                          heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
-        model_causal = GATMolecule(args.model_type,dim_in,args.dim_hidden,dim_out,
-                                 heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
-        task = 'gpp'
-        
     elif 'ogbg' in args.dataset:
-        model = GATGraph(args.model_type,dim_in,args.dim_hidden,dim_out,
-                          heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
-        model_causal = GATGraph(args.model_type,dim_in,args.dim_hidden,dim_out,
-                                 heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim)
         task = 'gpp'
+    elif 'ogbl' in args.dataset:
+        task = 'lpp'
         
     initial_learning_rate=0.01
     beta_1=0.9
@@ -164,34 +174,36 @@ def main():
         # save model
         torch.save(model.state_dict(),os.path.join(model_dir,model_file_name))
     
-    print('Continue training (causal)...')
     
-    if 1: #'ogb' in args.dataset:
-        train_model_dataloader(model_causal,train_loader,args.model_type,optimizer_causal,device,
-                               num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
-                               early_stop=args.early_stop,tol=args.tol,verbose=True,
-                               intervention_loss=True,lam_causal=args.lam_causal,
-                               n_interventions_per_node=args.n_interventions,task=task)
-    else:
-        train_model(model_causal,X,edge_indices,Y,
-                    args.model_type,optimizer_causal,device,
-                    node_indices=train_idx,
-                    edge_attr=edge_attr,num_epochs=args.num_epochs_tuning,
-                    intervention_loss=True,
-                    lam_causal=args.lam_causal,
-                    early_stop=args.early_stop,tol=args.tol,verbose=True,
-                    pred_criterion=pred_criterion,
-                    n_interventions_per_node=args.n_interventions)
 
-    # save model
     model_file_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}.pt'.format(args.model_type,args.K,
-                                                            args.dim_hidden,args.n_layers,
-                                                            args.lam_causal,
-                                                            args.n_interventions)
-    torch.save(model_causal.state_dict(),os.path.join(model_dir,model_file_name))
+                                                                args.dim_hidden,args.n_layers,
+                                                                args.lam_causal,
+                                                                args.n_interventions)
+
+    if not os.path.exists(os.path.join(model_dir,model_file_name)):
+        print('Continue training (causal)...')
+        if 1: #'ogb' in args.dataset:
+            train_model_dataloader(model_causal,train_loader,args.model_type,optimizer_causal,device,
+                                   num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
+                                   early_stop=args.early_stop,tol=args.tol,verbose=True,
+                                   intervention_loss=True,lam_causal=args.lam_causal,
+                                   n_interventions_per_node=args.n_interventions,task=task)
+        else:
+            train_model(model_causal,X,edge_indices,Y,
+                        args.model_type,optimizer_causal,device,
+                        node_indices=train_idx,
+                        edge_attr=edge_attr,num_epochs=args.num_epochs_tuning,
+                        intervention_loss=True,
+                        lam_causal=args.lam_causal,
+                        early_stop=args.early_stop,tol=args.tol,verbose=True,
+                        pred_criterion=pred_criterion,
+                        n_interventions_per_node=args.n_interventions)
+        # save model
+        torch.save(model_causal.state_dict(),os.path.join(model_dir,model_file_name))
 
     print('Total Time: {} seconds'.format(time.time()-start))
-    
+
 if __name__ == "__main__":
     main()
     os._exit(1)
