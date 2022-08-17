@@ -7,8 +7,9 @@ import torch
 import torch.nn as nn
 
 from torch_geometric.loader import DataLoader,NeighborLoader
-from torch_geometric.utils import to_undirected
-    
+from torch_geometric.utils import index_to_mask,to_undirected    
+from torch_geometric.data import Data
+
 ROOT_DIR = '/home/sandbox/workspace/sequence-graphs/data/'
 
 def positionalencoding1d(d_model, length):
@@ -206,24 +207,37 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True):
         split_idx = dataset.get_idx_split()
         
         if 'arxiv' in dataset_name:
+              
+            data = dataset.data
+            data.n_id = torch.arange(data.num_nodes)
+
+            edge_indices = data.edge_index[[1,0]]
+
+            # ensure edges point in direction of increasing time
+            delta_year = data.node_year[edge_indices[0]]-data.node_year[edge_indices[1]]
+            rev_idx = delta_year.squeeze() < 0
+            edge_indices[:,rev_idx] = edge_indices[[1,0]][:,rev_idx]
 
             # positional encoding of paper years
-            max_node_year = dataset.data.node_year.data.numpy().max()
-            min_node_year = dataset.data.node_year.data.numpy().min()
+            max_node_year = data.node_year.data.numpy().max()
+            min_node_year = data.node_year.data.numpy().min()
         
             pos_encoding = positionalencoding1d(16,max_node_year-min_node_year+1)
-            year_src_enc = max_node_year-dataset.data.node_year[dataset.data.edge_index[0]].squeeze()
-            year_target_enc = max_node_year-dataset.data.node_year[dataset.data.edge_index[1]].squeeze()
-            dataset.data.edge_attr = pos_encoding[year_src_enc]-pos_encoding[year_target_enc]
-            dataset.data.y = dataset.data.y.squeeze()
+            year_src_enc = max_node_year-data.node_year[data.edge_index[0]].squeeze()
+            year_target_enc = max_node_year-data.node_year[data.edge_index[1]].squeeze()
+            edge_attr = pos_encoding[year_src_enc]-pos_encoding[year_target_enc]
             
-        train_loader = NeighborLoader(dataset.data,num_neighbors=[-1], 
+            data = Data(x=data.x,edge_index=edge_indices,edge_attr=edge_attr,
+                        y=data.y.squeeze(),n_id=torch.arange(data.num_nodes),
+                        train_mask=index_to_mask(split_idx['train'],data.y.size(0)))
+                        
+        train_loader = NeighborLoader(data,num_neighbors=[-1], 
                                       input_nodes=split_idx['train'], 
                                       batch_size=batch_size,shuffle=shuffle_train)
-        valid_loader = NeighborLoader(dataset.data,num_neighbors=[-1],
+        valid_loader = NeighborLoader(data,num_neighbors=[-1],
                                       input_nodes=split_idx['valid'],
                                       batch_size=batch_size,shuffle=False)
-        test_loader = NeighborLoader(dataset.data,num_neighbors=[-1],
+        test_loader = NeighborLoader(data,num_neighbors=[-1],
                                      input_nodes=split_idx['test'],
                                      batch_size=batch_size,shuffle=False)
         
@@ -232,6 +246,7 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True):
         dataset_dir = os.path.join(ROOT_DIR,'planetoid',dataset_name)
         data,_ = torch.load(os.path.join(dataset_dir,'processed','data.pt'))
         data.y = data.y #.unsqueeze(-1).float()
+        data.n_id = torch.arange(data.num_nodes)
         
         train_idx = data.train_mask.nonzero(as_tuple=False).view(-1)
         valid_idx = data.val_mask.nonzero(as_tuple=False).view(-1)
@@ -359,14 +374,45 @@ def get_dataset_params(dataset_name,dataloader,dim_hidden):
         dim_in = dim_hidden if dataset_name == 'ogbl-ddi' else dataloader.data.x.shape[1]
         dim_out = 1
         edge_dim = dataloader.data.edge_attr.shape[1] if dataloader.data.edge_attr is not None else None
-        pred_criterion = nn.BCELoss(reduction='none')
+        pred_criterion = nn.BCEWithLogitsLoss(reduction='none')
         
     return dim_in,dim_out,edge_dim,pred_criterion
 
-def generate_rewired_dataloader(dataloader,e_id,batch_size=256,shuffle=True):
+def generate_rewired_dataloader(model,dataloader,attn_thresh=0.1,batch_size=256,shuffle=True,verbose=False):
     
-    data = dataloader.data
-    data.edge_index = data.edge_index[:,e_id]
-    data.edge_attr = None if data.edge_attr is None else train_data.edge_attr[:,e_id]
+    all_attn_weights = []
+    all_edge_index = []
+    all_edge_attr = []
+    node_indices = []
+    for batch in dataloader:
+        _,attn_weights_list = model(batch.x,batch.edge_index,batch.edge_attr)
+        attn_weights = torch.cat(attn_weights_list,dim=1).mean(1)
+        all_attn_weights.append(attn_weights)
+        all_edge_index.append(batch.n_id[batch.edge_index])
+        all_edge_attr.append(batch.edge_attr)
+        node_indices.append(batch.n_id)
+    
+    attn_weights = torch.cat(all_attn_weights)
+    edge_index = torch.cat(all_edge_index,dim=1)
+    edge_attr = None if all_edge_attr[0] is None else torch.cat(all_edge_attr)
+    node_indices = torch.cat(node_indices)
+    x = torch.clone(dataloader.data.x)
+    if hasattr(batch,'y'):
+        y = torch.clone(dataloader.data.y)
+    
+    e_id = torch.nonzero(attn_weights > attn_thresh).squeeze()
+    
+    if verbose:
+        print('Retaining {} of {} edges'.format(e_id.size(0),attn_weights.size(0)))
+        
+    remaining_edge_index = edge_index[:,e_id]
+    remaining_edge_attr = None if edge_attr is None else edge_attr[e_id]
+    if hasattr(batch,'y'):        
+        data = Data(x=x,edge_index=remaining_edge_index,
+                    edge_attr=remaining_edge_attr,y=y)
+    else:
+        data = Data(x=x,edge_index=remaining_edge_index,
+                    edge_attr=remaining_edge_attr)
 
-    return NeighborLoader(data,num_neighbors=[-1],batch_size=batch_size,shuffle=shuffle)
+    return NeighborLoader(data,num_neighbors=[-1],batch_size=batch_size,shuffle=shuffle,
+                          input_nodes=node_indices)

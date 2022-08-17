@@ -64,22 +64,13 @@ def main():
     print('Loading data...')
     
     if 'ogbg-mol' in args.dataset:
-        train_loader,_,_ = load_dataloader(args.dataset,batch_size=512)
+        train_loader,_,_ = load_dataloader(args.dataset,batch_size=50000)
     elif 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
         train_loader,_,_ = load_dataloader(args.dataset,batch_size=5000)
     elif 'ogbl' in args.dataset:
-        train_loader,_,_ = load_dataloader(args.dataset,batch_size=10000)
+        train_loader,_,_ = load_dataloader(args.dataset,batch_size=100000)
 
     dim_in,dim_out,edge_dim,pred_criterion = get_dataset_params(args.dataset,train_loader,args.dim_hidden)
-    
-#     else:
-#         train_idx,valid_idx,test_idx = load_ogb_splits(args.dataset)
-#         X,edge_indices,Y,edge_attr,addl_params = load_ogb_data(args.dataset)
-
-#         edge_dim = addl_params['edge_dim']
-#         dim_in = addl_params['dim_in']
-#         dim_out = addl_params['dim_out']
-#         pred_criterion = addl_params['pred_criterion']
     
     print('Initializing Models...')
     np.random.seed(1)
@@ -128,19 +119,11 @@ def main():
         optimizer.load_state_dict(torch.load(os.path.join(model_dir,optimizer_file_name)))
         
     else:
-        if 1: #'ogb' in args.dataset:
-            train_model_dataloader(model,train_loader,args.model_type,optimizer,device,
-                           num_epochs=args.num_epochs,pred_criterion=pred_criterion,
-                           intervention_loss=False,early_stop=args.early_stop,
-                           tol=args.tol,verbose=True,task=task)
+        train_model_dataloader(model,train_loader,args.model_type,optimizer,device,
+                       num_epochs=args.num_epochs,pred_criterion=pred_criterion,
+                       intervention_loss=False,early_stop=args.early_stop,
+                       tol=args.tol,verbose=True,task=task)
 
-        else:
-            train_model(model,X,edge_indices,Y,args.model_type,optimizer,device,
-                        node_indices=train_idx,
-                        edge_attr=edge_attr,num_epochs=args.num_epochs,
-                        intervention_loss=False,
-                        early_stop=args.early_stop,tol=args.tol,verbose=True,
-                        pred_criterion=pred_criterion)
 
         # save model + optimizer
         torch.save(model.state_dict(),os.path.join(model_dir,model_file_name))
@@ -157,19 +140,10 @@ def main():
                                                        args.dim_hidden,args.n_layers)
     if not os.path.exists(os.path.join(model_dir,model_file_name)):
         print('Continue training (baseline)...')
-        if 1: #'ogb' in args.dataset:
-            train_model_dataloader(model,train_loader,args.model_type,optimizer,device,
-                           num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
-                           intervention_loss=False,early_stop=args.early_stop,
-                           tol=args.tol,verbose=True,task=task)
-        else:
-            train_model(model,X,edge_indices,Y,
-                        args.model_type,optimizer,device,
-                        node_indices=train_idx,
-                        edge_attr=edge_attr,num_epochs=args.num_epochs_tuning,
-                        intervention_loss=False,
-                        early_stop=args.early_stop,tol=args.tol,verbose=True,
-                        pred_criterion=pred_criterion)
+        train_model_dataloader(model,train_loader,args.model_type,optimizer,device,
+                       num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
+                       intervention_loss=False,early_stop=args.early_stop,
+                       tol=args.tol,verbose=True,task=task)
             
         # save model
         torch.save(model.state_dict(),os.path.join(model_dir,model_file_name))

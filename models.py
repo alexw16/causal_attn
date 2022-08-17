@@ -14,6 +14,8 @@ class GCNConvBase(nn.Module):
     
     def forward(self,x,edge_index,edge_attr,return_attention_weights):
         return self.gcn(x,edge_index),(None,None)
+    
+
         
 class GATBase(nn.Module):
     def __init__(self,model_type,dim_in,dim_hidden,dim_out,
@@ -83,18 +85,18 @@ class GATLink(GATBase):
                  heads=3,n_layers=1,edge_dim=None):
         super(GATLink, self).__init__(model_type,dim_in,dim_hidden,dim_out,
                  heads,n_layers,edge_dim)
-        self.gatnode = GATNode(model_type,dim_in,dim_hidden,dim_out,
+        self.gatnode = GATNode(model_type,dim_in,dim_hidden,dim_hidden,
                  heads,n_layers,edge_dim)
-        self.trans_emb = nn.Parameter(torch.ones(dim_hidden),
-            requires_grad=True)
-        self.sigmoid = nn.Sigmoid()
+        self.linear = nn.Linear(dim_hidden*2,dim_out,bias=True)
+        self.leakyrelu = nn.LeakyReLU()
         
     def forward(self,X,edge_indices,edge_indices_pred,edge_attr=None):
         
         node_emb,attn_weights_list = self.gatnode(X,edge_indices,edge_attr)
         i,j = edge_indices_pred[0],edge_indices_pred[1]
-        out = ((node_emb[i] + self.trans_emb)*node_emb[j]).sum(1)
-        out = self.sigmoid(out)
+        out = torch.cat([node_emb[i],node_emb[j]],dim=1)
+        out = self.leakyrelu(out)
+        out = self.linear(out).squeeze()
         
         return out,attn_weights_list
     

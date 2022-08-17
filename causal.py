@@ -73,17 +73,19 @@ def compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
                                       Y[node_indices])
     elif task == 'lpp':
         
+        num_nodes = max(edge_indices_pred.max() + 1,node_indices.max() + 1)
+        
         # loss per node (original)
         pred_loss = pred_criterion(preds,Y)
         loss_adj = SparseTensor(row=edge_indices_pred[0],col=edge_indices_pred[1],
-                                value=pred_loss)
+                                value=pred_loss,sparse_sizes=(num_nodes, num_nodes))
         pred_loss = loss_adj.mean(1)[node_indices]
 
         # loss per node (intervened)
         interv_preds,_ = model(X,remaining_edge_indices,edge_indices_pred,edge_attr)
         interv_pred_loss = pred_criterion(interv_preds,Y)
         interv_loss_adj = SparseTensor(row=edge_indices_pred[0],col=edge_indices_pred[1],
-                                value=interv_pred_loss)
+                                value=interv_pred_loss,sparse_sizes=(num_nodes, num_nodes))
         interv_pred_loss = loss_adj.mean(1)[node_indices]
         
     if loss_ratio:

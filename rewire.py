@@ -11,7 +11,7 @@ from train import *
 from utils import *
 from models import *
 from causal import *
-        
+      
 def instantiate_model(dataset_name,model_type,dim_in,dim_hidden,dim_out,
                       heads,n_layers,edge_dim,n_embeddings=None):
     
@@ -147,12 +147,9 @@ def main():
                                       n_embeddings=n_embeddings)
         model.load_state_dict(torch.load(os.path.join(model_dir,model_file_name)))
         
-        _,attn_weights_list = model(train_loader.data.x,train_loader.data.edge_index,train_loader.data.edge_attr)
-        attn_weights = attn_weights_list[0]
-        e_id = torch.nonzero(attn_weights.mean(1) > args.attn_thresh).squeeze()
-        print('Rewiring graph: {} of {} edges retained'.format(e_id.size(0),attn_weights.size(0)))
-        rewired_train_loader = generate_rewired_dataloader(train_loader,e_id,shuffle=True,
-                                                           batch_size=batch_size)
+        rewired_train_loader = generate_rewired_dataloader(model,train_loader,args.attn_thresh,
+                                                           batch_size=batch_size,
+                                                           shuffle=True,verbose=True)
         
         print('Training GCN model: rewired graph (baseline attention)...')
         n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
@@ -162,6 +159,7 @@ def main():
         optimizer = torch.optim.Adam(params=model_gcn.parameters(), 
                         lr=initial_learning_rate, betas=(beta_1, beta_2))
         
+        train_start = time.time()
         train_model_dataloader(model_gcn,rewired_train_loader,args.model_type,optimizer,device,
                                num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
                                early_stop=args.early_stop,tol=args.tol,verbose=True,
@@ -169,7 +167,8 @@ def main():
         
         # save model
         torch.save(model_gcn.state_dict(),os.path.join(rewire_model_dir,rewire_model_file_name))
-    
+        np.savetxt(os.path.join(rewire_model_dir,'time.' + rewire_model_file_name),
+                   np.array([time.time()-train_start]))
     
     model_file_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}.pt'.format(args.model_type,args.K,
                                                                 args.dim_hidden,args.n_layers,
@@ -196,12 +195,9 @@ def main():
                                       n_embeddings=n_embeddings)
         model.load_state_dict(torch.load(os.path.join(model_dir,model_file_name)))
         
-        _,attn_weights_list = model(train_loader.data.x,train_loader.data.edge_index,train_loader.data.edge_attr)
-        attn_weights = attn_weights_list[0]
-        e_id = torch.nonzero(attn_weights.mean(1) > args.attn_thresh).squeeze()
-        print('Rewiring graph: {} of {} edges retained'.format(e_id.size(0),attn_weights.size(0)))
-        rewired_train_loader = generate_rewired_dataloader(train_loader,e_id,shuffle=True,
-                                                           batch_size=batch_size)
+        rewired_train_loader = generate_rewired_dataloader(model,train_loader,args.attn_thresh,
+                                                           batch_size=batch_size,
+                                                           shuffle=True,verbose=True)
         
         print('Training GCN model: rewired graph (baseline attention)...')
         n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
@@ -211,6 +207,7 @@ def main():
         optimizer = torch.optim.Adam(params=model_gcn.parameters(), 
                         lr=initial_learning_rate, betas=(beta_1, beta_2))
         
+        train_start = time.time()
         train_model_dataloader(model_gcn,rewired_train_loader,args.model_type,optimizer,device,
                                num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
                                early_stop=args.early_stop,tol=args.tol,verbose=True,
@@ -218,6 +215,8 @@ def main():
         
         # save model
         torch.save(model_gcn.state_dict(),os.path.join(rewire_model_dir,rewire_model_file_name))
+        np.savetxt(os.path.join(rewire_model_dir,'time.' + rewire_model_file_name),
+                   np.array([time.time()-train_start]))
 
     print('Total Time: {} seconds'.format(time.time()-start))
     
