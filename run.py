@@ -148,7 +148,6 @@ def main():
         # save model
         torch.save(model.state_dict(),os.path.join(model_dir,model_file_name))
     
-    
 
     model_file_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}.pt'.format(args.model_type,args.K,
                                                                 args.dim_hidden,args.n_layers,

@@ -362,7 +362,7 @@ def get_dataset_params(dataset_name,dataloader,dim_hidden):
         if any(x in dataset_name for x in ['molesol','molfreesolv','mollipo']):
             pred_criterion = nn.MSELoss(reduction='none')
         else:
-            pred_criterion = nn.BCELoss(reduction='none')
+            pred_criterion = nn.BCEWithLogitsLoss(reduction='none')
     
     elif 'ogbn' in dataset_name or dataset_name in ['Cora','CiteSeer','PubMed']:
         dim_in = dataloader.data.x.shape[1]

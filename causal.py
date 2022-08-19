@@ -17,8 +17,7 @@ def get_pruned_e_id(edge_indices,pruned_edge_indices):
                if (n[0],n[1]) in pruned_edges])).to(edge_indices.device)
 
 def select_edges_to_prune(node_indices,edge_indices,
-                          sampler=None,
-                          edge_attr=None,sampling='uniform',
+                          sampler=None,sampling='uniform',
                           candidate_edge_indices=None):
     
     # sample edges to prune
@@ -47,7 +46,7 @@ def create_edge_item_mapping(ptr,edge_indices):
     
     item_index = torch.cat([torch.ones(ptr[i+1]-ptr[i])*i 
                           for i in range(ptr.size(0)-1)])
-    node_index = torch.arange(ptr.max())
+    # node_index = torch.arange(ptr.max())
 
     edge_item_mapping = item_index[edge_indices[0]]
 
@@ -89,8 +88,9 @@ def compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
         interv_pred_loss = loss_adj.mean(1)[node_indices]
         
     if loss_ratio:
-        causal_effect = interv_pred_loss/(1e-20 + pred_loss)
-        causal_effect = 1/(1+torch.exp(-10*(causal_effect-1)))
+        # relu = nn.ReLU()
+        causal_effect = interv_pred_loss/(1e-10 + pred_loss)
+        causal_effect = 1/(1+torch.exp(-1*(causal_effect-1))) # 1/(1+1/causal_effect) #
     else:
         causal_effect = interv_pred_loss - pred_loss #/(1e-20 + pred_loss)
         causal_effect = 1/(1+torch.exp(-1*(causal_effect-1)))
@@ -113,7 +113,7 @@ def identify_candidate_edges(node_indices,edge_indices,edge_sampling_values):
     j = node_indices
 
     return torch.LongTensor(np.array([i,j]))
-                
+
 def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
                               attn_weights_list,device=0,n_interventions_per_node=10,
                               edge_attr=None,
@@ -121,7 +121,7 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
                               sampling='uniform',edge_sampling_values=None,
                               weight_by_degree=False,
                               task='npp',ptr=None,edge_indices_pred=None,
-                              loss_ratio=False):
+                              loss_ratio=False,shuffle_effect=False):
     
     sigmoid = nn.Sigmoid()
     
@@ -148,8 +148,7 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
         
         # select & prune edges
         pruned_e_id,mask = select_edges_to_prune(node_indices,edge_indices,
-                                                 sampler=sampler,edge_attr=edge_attr,
-                                                 sampling=sampling,
+                                                 sampler=sampler,sampling=sampling,
                                                  candidate_edge_indices=candidate_edge_indices)
         remaining_edge_indices,remaining_edge_attr = prune_edges(edge_indices,edge_attr,
                                                                  pruned_e_id,mask)
@@ -166,6 +165,10 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
                                               edge_indices_pred=edge_indices_pred,
                                               loss_ratio=loss_ratio)
         
+        if shuffle_effect:
+            causal_effect = causal_effect[torch.randperm(causal_effect.size(0))]
+            # causal_effect = torch.rand(causal_effect.size(0)).to(causal_effect.device)
+
         # weight loss function
         if weight_by_degree:
             from collections import Counter
@@ -176,7 +179,10 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
             
             bce_loss = nn.BCELoss(weight=w)
         else:
-            bce_loss = nn.BCELoss()
+            if loss_ratio:
+                loss_fn = nn.BCELoss() #nn.CrossEntropyLoss()
+            else:
+                loss_fn = nn.BCELoss()
             
         n_attn_layers = len(attn_weights_list)
         for attn_weights in attn_weights_list:
@@ -184,7 +190,7 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
             # select attention weights (orig model) related to intervened edges
             attn_weights_intervened_edge = attn_weights[pruned_e_id].mean(1)
             
-            interv_loss = bce_loss(attn_weights_intervened_edge,causal_effect)
+            interv_loss = loss_fn(attn_weights_intervened_edge,causal_effect)
             causal_interv_loss += interv_loss/n_interventions_per_node/n_attn_layers
-        
+    # print(causal_effect.min(),causal_effect.max(),causal_effect.mean(),attn_weights_intervened_edge.mean())    
     return causal_interv_loss

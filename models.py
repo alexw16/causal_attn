@@ -136,10 +136,10 @@ class GATGraph(GATBase):
             attn_weights_list.append(attn_weights)
         out = torch.cat([h,out],1)
         
+        out = aggregate_using_ptr(out,ptr)
+        
         out = self.leakyrelu(out)
         out = self.linear_final(out)
-        
-        out = aggregate_using_ptr(out,ptr)
         
         return out,attn_weights_list
     
@@ -162,4 +162,4 @@ class GATMolecule(nn.Module):
                 
         out,attn_weights_list = self.gatgraph(atom_emb,edge_indices,ptr,edge_emb)
 
-        return self.sigmoid(out),attn_weights_list
+        return out,attn_weights_list

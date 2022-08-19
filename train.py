@@ -150,6 +150,7 @@ def train_model_dataloader(model,dataloader,model_type,optimizer,device=0,
                            n_interventions_per_node=10,task='npp'):
         
     past_loss = 1e10
+    epoch_loss_list = []
     for epoch_no in range(num_epochs):
          
         loss_dict,_ = run_epoch_dataloader(epoch_no,model,dataloader,model_type=model_type,
@@ -162,11 +163,13 @@ def train_model_dataloader(model,dataloader,model_type,optimizer,device=0,
                                            task=task)
         
         current_loss = loss_dict['total_loss']
-        if early_stop and abs(past_loss - current_loss)/abs(past_loss) < tol:
-            break
-            
-        past_loss = current_loss
-        
+        epoch_loss_list.append(current_loss)
+        if early_stop and epoch_no > 10:
+            prev_last_5 = np.array(epoch_loss_list[-10:-5]).mean()
+            last_5 = np.array(epoch_loss_list[-5:]).mean()
+            if abs(prev_last_5 - last_5)/abs(prev_last_5) < tol:
+                break
+                    
 def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                     optimizer=None,device=0,
                     verbose=True,train=True,
@@ -195,7 +198,7 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
         batch_edge_attr = batch.edge_attr if hasattr(batch, 'edge_attr') else None
         
         if task == 'npp' or task == 'gpp':
-            Y = batch.y
+            Y = torch.nan_to_num(batch.y)
             batch_edge_index_pred  = None
         elif task == 'lpp':
             is_undirected = True
@@ -258,6 +261,8 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                 elif task == 'lpp':
                     node_indices = torch.arange(batch_edge_index.max()+1)
                     
+                shuffle_effect = 'shuffle' in model_type
+                
                 causal_interv_loss = compute_intervention_loss(
                                         model,X,node_indices,
                                         batch_edge_index,Y,preds,attn_weights,
@@ -268,7 +273,7 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                                         n_interventions_per_node=n_interventions_per_node,
                                         task=task,ptr=batch_ptr,
                                         edge_indices_pred=batch_edge_index_pred,
-                                        loss_ratio=loss_ratio)
+                                        loss_ratio=loss_ratio,shuffle_effect=shuffle_effect)
             
             batch_loss = pred_loss + lam_causal*causal_interv_loss
             
