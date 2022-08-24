@@ -16,7 +16,6 @@ class GCNConvBase(nn.Module):
         return self.gcn(x,edge_index),(None,None)
     
 
-        
 class GATBase(nn.Module):
     def __init__(self,model_type,dim_in,dim_hidden,dim_out,
                  heads=3,n_layers=1,edge_dim=None):

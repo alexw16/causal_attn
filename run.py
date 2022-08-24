@@ -15,7 +15,7 @@ from causal import *
 def instantiate_model(dataset_name,model_type,dim_in,dim_hidden,dim_out,
                       heads,n_layers,edge_dim,n_embeddings=None):
     
-    if 'ogbn' in dataset_name or dataset_name in ['Cora','CiteSeer','PubMed']:
+    if 'ogbn' in dataset_name or dataset_name in ['Cora','CiteSeer','PubMed','cornell','wisconsin','texas']:
         model = GATNode(model_type,dim_in,dim_hidden,dim_out,
                           heads,n_layers,edge_dim)
 
@@ -49,7 +49,7 @@ def main():
     parser.add_argument('-ne', dest='num_epochs',type=int)
     parser.add_argument('-net', dest='num_epochs_tuning',type=int)
     parser.add_argument('-d', dest='device',default='cpu')
-    parser.add_argument('-lc', dest='lam_causal',type=float,default=1)
+    parser.add_argument('-lc', dest='lam_causal',nargs='+',type=float)
     parser.add_argument('-tol', dest='tol',type=float,default=1e-5)
     parser.add_argument('-es', dest='early_stop',type=int,default=1)
     parser.add_argument('-ni', dest='n_interventions',type=int,default=10)
@@ -60,12 +60,12 @@ def main():
     if not os.path.exists(args.save_dir):
         os.mkdir(args.save_dir)
         os.mkdir(model_dir)
-        
+    print(args.lam_causal)
     print('Loading data...')
     
     if 'ogbg-mol' in args.dataset:
         train_loader,_,_ = load_dataloader(args.dataset,batch_size=50000)
-    elif 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
+    elif 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed','cornell','texas','wisconsin']:
         train_loader,_,_ = load_dataloader(args.dataset,batch_size=5000)
     elif 'ogbl' in args.dataset:
         train_loader,_,_ = load_dataloader(args.dataset,batch_size=100000)
@@ -84,7 +84,7 @@ def main():
                               heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,
                               n_embeddings=n_embeddings)
     
-    if 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
+    if 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed','cornell','texas','wisconsin']:
         task = 'npp'
     elif 'ogbg' in args.dataset:
         task = 'gpp'
@@ -151,33 +151,29 @@ def main():
 
     model_file_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}.pt'.format(args.model_type,args.K,
                                                                 args.dim_hidden,args.n_layers,
-                                                                args.lam_causal,
+                                                                '_'.join(map(str,args.lam_causal)),
+                                                                args.n_interventions)
+    optimizer_file_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}.optimizer.pt'.format(args.model_type,args.K,
+                                                                args.dim_hidden,args.n_layers,
+                                                                '_'.join(map(str,args.lam_causal)),
                                                                 args.n_interventions)
 
     if not os.path.exists(os.path.join(model_dir,model_file_name)):
         print('Continue training (causal)...')
-        if 1: #'ogb' in args.dataset:
-            train_model_dataloader(model_causal,train_loader,args.model_type,optimizer_causal,device,
-                                   num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
-                                   early_stop=args.early_stop,tol=args.tol,verbose=True,
-                                   intervention_loss=True,lam_causal=args.lam_causal,
-                                   n_interventions_per_node=args.n_interventions,task=task)
-        else:
-            train_model(model_causal,X,edge_indices,Y,
-                        args.model_type,optimizer_causal,device,
-                        node_indices=train_idx,
-                        edge_attr=edge_attr,num_epochs=args.num_epochs_tuning,
-                        intervention_loss=True,
-                        lam_causal=args.lam_causal,
-                        early_stop=args.early_stop,tol=args.tol,verbose=True,
-                        pred_criterion=pred_criterion,
-                        n_interventions_per_node=args.n_interventions)
+        loss_df = train_model_dataloader(model_causal,train_loader,args.model_type,optimizer_causal,device,
+                               num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
+                               early_stop=args.early_stop,tol=args.tol,verbose=True,
+                               intervention_loss=True,lam_causal=args.lam_causal,
+                               n_interventions_per_node=args.n_interventions,task=task)
+
         # save model
+        loss_file_name = model_file_name.split('.pt')[0] + '.loss.tsv'
+        loss_df.to_csv(os.path.join(model_dir,loss_file_name),sep='\t')
         torch.save(model_causal.state_dict(),os.path.join(model_dir,model_file_name))
+        torch.save(optimizer.state_dict(),os.path.join(model_dir,optimizer_file_name))
 
     print('Total Time: {} seconds'.format(time.time()-start))
 
 if __name__ == "__main__":
     main()
     os._exit(1)
-  

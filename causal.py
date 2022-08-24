@@ -95,13 +95,10 @@ def compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
         causal_effect = interv_pred_loss - pred_loss #/(1e-20 + pred_loss)
         causal_effect = 1/(1+torch.exp(-1*(causal_effect-1)))
     causal_effect = causal_effect.detach()
-    
-    # # lpp task (causal effect matrix)
-    # # print(causal_effect.shape)
-    # if causal_effect.dim() > 1:
-    #     print(node_indices.shape,causal_effect.shape)
-    #     causal_effect = causal_effect.mean(1)[node_indices]
-    #     print(causal_effect.shape)
+
+    if causal_effect.dim() > 1:
+        causal_effect = torch.nanmean(causal_effect,dim=1) #.mean(1) #[node_indices]
+        
     return causal_effect.squeeze()
 
 def identify_candidate_edges(node_indices,edge_indices,edge_sampling_values):
@@ -143,7 +140,7 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
         sampler = NeighborSampler(edge_item_indices,sizes=[1])
         candidate_edge_indices = None
                 
-    causal_interv_loss = 0
+    causal_interv_loss = [0]*len(attn_weights_list)
     for intervention_no in range(n_interventions_per_node):
         
         # select & prune edges
@@ -154,7 +151,7 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
                                                                  pruned_e_id,mask)
     
         if task == 'gpp':
-            nodes_to_evaluate = node_indices
+            nodes_to_evaluate = edge_item_indices[1,pruned_e_id]
         elif task == 'npp' or task == 'lpp':
             nodes_to_evaluate = edge_indices[1,pruned_e_id]
         
@@ -164,10 +161,11 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
                                               pred_criterion,task=task,ptr=ptr,
                                               edge_indices_pred=edge_indices_pred,
                                               loss_ratio=loss_ratio)
+        causal_effect = torch.nan_to_num(causal_effect,nan=1e-10)
         
         if shuffle_effect:
-            causal_effect = causal_effect[torch.randperm(causal_effect.size(0))]
-            # causal_effect = torch.rand(causal_effect.size(0)).to(causal_effect.device)
+            # causal_effect = causal_effect[torch.randperm(causal_effect.size(0))]
+            causal_effect = torch.rand(causal_effect.size(0)).to(causal_effect.device)
 
         # weight loss function
         if weight_by_degree:
@@ -180,17 +178,17 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
             bce_loss = nn.BCELoss(weight=w)
         else:
             if loss_ratio:
-                loss_fn = nn.BCELoss() #nn.CrossEntropyLoss()
+                loss_fn = nn.BCELoss()
             else:
                 loss_fn = nn.BCELoss()
             
         n_attn_layers = len(attn_weights_list)
-        for attn_weights in attn_weights_list:
+        for i,attn_weights in enumerate(attn_weights_list):
             
             # select attention weights (orig model) related to intervened edges
             attn_weights_intervened_edge = attn_weights[pruned_e_id].mean(1)
             
             interv_loss = loss_fn(attn_weights_intervened_edge,causal_effect)
-            causal_interv_loss += interv_loss/n_interventions_per_node/n_attn_layers
+            causal_interv_loss[i] += interv_loss/n_interventions_per_node/n_attn_layers
     # print(causal_effect.min(),causal_effect.max(),causal_effect.mean(),attn_weights_intervened_edge.mean())    
-    return causal_interv_loss
+    return torch.stack(causal_interv_loss)

@@ -229,7 +229,9 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True):
             
             data = Data(x=data.x,edge_index=edge_indices,edge_attr=edge_attr,
                         y=data.y.squeeze(),n_id=torch.arange(data.num_nodes),
-                        train_mask=index_to_mask(split_idx['train'],data.y.size(0)))
+                        train_mask=index_to_mask(split_idx['train'],data.y.size(0)),
+                        val_mask=index_to_mask(split_idx['valid'],data.y.size(0)),
+                        test_mask=index_to_mask(split_idx['test'],data.y.size(0)))
                         
         train_loader = NeighborLoader(data,num_neighbors=[-1], 
                                       input_nodes=split_idx['train'], 
@@ -247,6 +249,28 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True):
         data,_ = torch.load(os.path.join(dataset_dir,'processed','data.pt'))
         data.y = data.y #.unsqueeze(-1).float()
         data.n_id = torch.arange(data.num_nodes)
+        
+        train_idx = data.train_mask.nonzero(as_tuple=False).view(-1)
+        valid_idx = data.val_mask.nonzero(as_tuple=False).view(-1)
+        test_idx = data.test_mask.nonzero(as_tuple=False).view(-1)
+
+        train_loader = NeighborLoader(data,num_neighbors=[-1],input_nodes=train_idx, 
+                                      batch_size=batch_size,shuffle=True)
+        valid_loader = NeighborLoader(data,num_neighbors=[-1],input_nodes=valid_idx,
+                                      batch_size=batch_size,shuffle=False)
+        test_loader = NeighborLoader(data,num_neighbors=[-1],input_nodes=test_idx,
+                                     batch_size=batch_size,shuffle=False)
+        
+    elif dataset_name in ['cornell','texas','wisconsin']:
+
+        dataset_dir = os.path.join(ROOT_DIR,'webkb',dataset_name)
+        data,_ = torch.load(os.path.join(dataset_dir,'processed','data.pt'))
+        data.y = data.y #.unsqueeze(-1).float()
+        data.n_id = torch.arange(data.num_nodes)
+        
+        data.train_mask = data.train_mask[:,0]
+        data.val_mask = data.val_mask[:,0]
+        data.test_mask = data.test_mask[:,0]
         
         train_idx = data.train_mask.nonzero(as_tuple=False).view(-1)
         valid_idx = data.val_mask.nonzero(as_tuple=False).view(-1)
@@ -336,7 +360,7 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True):
                                       num_neighbors=[-1],
                                       input_nodes=torch.unique(test_dataset.data.edge_index.flatten()),
                                       batch_size=batch_size,
-                                      shuffle=False)
+                                      shuffle=False)        
 
     return train_loader,valid_loader,test_loader
 
@@ -364,7 +388,7 @@ def get_dataset_params(dataset_name,dataloader,dim_hidden):
         else:
             pred_criterion = nn.BCEWithLogitsLoss(reduction='none')
     
-    elif 'ogbn' in dataset_name or dataset_name in ['Cora','CiteSeer','PubMed']:
+    elif 'ogbn' in dataset_name or dataset_name in ['Cora','CiteSeer','PubMed','cornell','texas','wisconsin']:
         dim_in = dataloader.data.x.shape[1]
         dim_out = dataloader.data.y.long().data.numpy().max()+1
         edge_dim = dataloader.data.edge_attr.shape[1] if dataloader.data.edge_attr is not None else None

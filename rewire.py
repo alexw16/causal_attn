@@ -11,31 +11,6 @@ from train import *
 from utils import *
 from models import *
 from causal import *
-      
-def instantiate_model(dataset_name,model_type,dim_in,dim_hidden,dim_out,
-                      heads,n_layers,edge_dim,n_embeddings=None):
-    
-    if 'ogbn' in dataset_name or dataset_name in ['Cora','CiteSeer','PubMed']:
-        model = GATNode(model_type,dim_in,dim_hidden,dim_out,
-                          heads,n_layers,edge_dim)
-
-    elif 'ogbg-mol' in dataset_name:
-        model = GATMolecule(model_type,dim_in,dim_hidden,dim_out,
-                          heads,n_layers,edge_dim)
-
-    elif 'ogbg' in dataset_name:
-        model = GATGraph(model_type,dim_in,dim_hidden,dim_out,
-                         heads,n_layers,edge_dim)
-
-    elif 'ogbl' in dataset_name:
-        if dataset_name == 'ogbl-ddi':
-            model = GATLinkEmbed(model_type,dim_in,dim_hidden,dim_out,
-                                 heads,n_layers,edge_dim,n_embeddings)
-        else:
-            model = GATLink(model_type,dim_in,dim_hidden,dim_out,
-                            heads,n_layers,edge_dim)
-    
-    return model
 
 def main():
     
