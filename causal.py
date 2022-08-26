@@ -90,9 +90,9 @@ def compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
     if loss_ratio:
         # relu = nn.ReLU()
         causal_effect = interv_pred_loss/(1e-10 + pred_loss)
-        causal_effect = 1/(1+torch.exp(-1*(causal_effect-1))) # 1/(1+1/causal_effect) #
+        causal_effect = 1/(1+torch.exp(-1*(causal_effect-1)))
     else:
-        causal_effect = interv_pred_loss - pred_loss #/(1e-20 + pred_loss)
+        causal_effect = interv_pred_loss - pred_loss
         causal_effect = 1/(1+torch.exp(-1*(causal_effect-1)))
     causal_effect = causal_effect.detach()
 
@@ -187,8 +187,7 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
             
             # select attention weights (orig model) related to intervened edges
             attn_weights_intervened_edge = attn_weights[pruned_e_id].mean(1)
-            
             interv_loss = loss_fn(attn_weights_intervened_edge,causal_effect)
             causal_interv_loss[i] += interv_loss/n_interventions_per_node/n_attn_layers
-    # print(causal_effect.min(),causal_effect.max(),causal_effect.mean(),attn_weights_intervened_edge.mean())    
+            
     return torch.stack(causal_interv_loss)

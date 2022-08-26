@@ -200,6 +200,7 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
     total_intervention_loss = 0
     
     model = model.to(device)
+    pred_criterion = pred_criterion.to(device)
 
     preds_list = []
     for batch in dataloader:
@@ -211,7 +212,7 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
         batch_edge_attr = batch.edge_attr if hasattr(batch, 'edge_attr') else None
         
         if task == 'npp' or task == 'gpp':
-            Y = batch.y #torch.nan_to_num(batch.y)
+            Y = batch.y
             batch_edge_index_pred  = None
         elif task == 'lpp':
             is_undirected = True
@@ -246,11 +247,21 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                                 else torch.ones(Y.size(0)).bool().to(Y.device)
         if train:
             
-            # prediction loss
-            pred_loss = torch.nanmean(pred_criterion(preds[batch_mask],
-                                       Y[batch_mask]))
+            nan_mask = ~torch.isnan(Y[batch_mask])
             
-            batch_loss = pred_loss
+            if 'weight' in model_type:
+                percent_pos = torch.nanmean(batch.y,0)
+                weight = (1-percent_pos)/percent_pos
+                weight = torch.tile(weight,(batch.y.size(0),1))
+                weight = torch.nan_to_num(weight,posinf=1)
+                weight[(batch.y == 0) | (batch.y.isnan())] = 1
+                pred_criterion.weight = weight[nan_mask]
+                
+            # prediction loss
+            pred_loss = pred_criterion(preds[batch_mask][nan_mask],
+                                       Y[batch_mask][nan_mask]).mean()
+            
+            batch_loss = 0
             
             if 'adversarial' in model_type:
                 sampling = 'adversarial'
@@ -277,6 +288,7 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                     
                 shuffle_effect = 'shuffle' in model_type
                 
+                pred_criterion.weight = None
                 causal_interv_loss = compute_intervention_loss(
                                         model,X,node_indices,
                                         batch_edge_index,Y,preds,attn_weights,
@@ -289,13 +301,13 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                                         edge_indices_pred=batch_edge_index_pred,
                                         loss_ratio=loss_ratio,shuffle_effect=shuffle_effect)
             
-            
             if isinstance(lam_causal,list):
                 lam_causal_tensor = torch.tensor(lam_causal).float().to(causal_interv_loss.device)
                 causal_loss = (lam_causal_tensor*causal_interv_loss).sum()
             else:
                 causal_loss = (lam_causal*causal_interv_loss).sum()
-            batch_loss += causal_loss
+            
+            batch_loss = pred_loss + causal_loss
             
             optimizer.zero_grad()
             batch_loss.backward()
@@ -313,7 +325,7 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                     
     end = time.time()
     
-    if verbose and epoch_no % 5 == 0:
+    if verbose and (epoch_no+1) % 5 == 0:
         mode = 'train' if train else 'test'
         print_str = 'Epoch {} ({:.5f} seconds)'.format(
             epoch_no,end-start)

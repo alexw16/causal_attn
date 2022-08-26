@@ -223,8 +223,8 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True):
             min_node_year = data.node_year.data.numpy().min()
         
             pos_encoding = positionalencoding1d(16,max_node_year-min_node_year+1)
-            year_src_enc = max_node_year-data.node_year[data.edge_index[0]].squeeze()
-            year_target_enc = max_node_year-data.node_year[data.edge_index[1]].squeeze()
+            year_src_enc = max_node_year-data.node_year[edge_indices[0]].squeeze()
+            year_target_enc = max_node_year-data.node_year[edge_indices[1]].squeeze()
             edge_attr = pos_encoding[year_src_enc]-pos_encoding[year_target_enc]
             
             data = Data(x=data.x,edge_index=edge_indices,edge_attr=edge_attr,

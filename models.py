@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch_geometric.nn.conv import GCNConv,GATConv,GATv2Conv,TransformerConv
 from torch_geometric.utils import remove_self_loops
 from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
+from torch_geometric.nn import SumAggregation
 
 from utils import aggregate_using_ptr
       
@@ -121,6 +122,7 @@ class GATGraph(GATBase):
                  heads,n_layers,edge_dim)
         self.linear_final = nn.Linear(dim_hidden*2,dim_out,bias=True)
         self.leakyrelu = nn.LeakyReLU()
+        self.sum_aggr = SumAggregation()
         
     def forward(self,X,edge_indices,ptr,edge_attr=None):
         
@@ -135,7 +137,7 @@ class GATGraph(GATBase):
             attn_weights_list.append(attn_weights)
         out = torch.cat([h,out],1)
         
-        out = aggregate_using_ptr(out,ptr)
+        out = self.sum_aggr(out,ptr=ptr)
         
         out = self.leakyrelu(out)
         out = self.linear_final(out)

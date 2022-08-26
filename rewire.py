@@ -11,6 +11,7 @@ from train import *
 from utils import *
 from models import *
 from causal import *
+from run import instantiate_model
 
 def main():
     
@@ -174,7 +175,7 @@ def main():
                                                            batch_size=batch_size,
                                                            shuffle=True,verbose=True)
         
-        print('Training GCN model: rewired graph (baseline attention)...')
+        print('Training GCN model: rewired graph (causal attention)...')
         n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
         model_gcn = instantiate_model(args.dataset,'gcnconv',dim_in,args.dim_hidden,dim_out,
                                       heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,

@@ -108,10 +108,11 @@ def main():
     print('Device: {}'.format(device))
     
     print('Training...')
-    model_file_name = '{}.init.{}heads.{}hd.nl{}.pt'.format(args.model_type,args.K,
-                                                           args.dim_hidden,args.n_layers)
-    optimizer_file_name = '{}.init.{}heads.{}hd.nl{}.optimizer.pt'.format(args.model_type,args.K,
-                                                           args.dim_hidden,args.n_layers)
+    model_name = '{}.init.{}heads.{}hd.nl{}'.format(args.model_type,args.K,
+                                                       args.dim_hidden,args.n_layers)
+    model_file_name = '{}.pt'.format(model_name)
+    optimizer_file_name = '{}.optimizer.pt'.format(model_name)
+    
     if os.path.exists(os.path.join(model_dir,model_file_name)) \
         and os.path.exists(os.path.join(model_dir,optimizer_file_name)):
         print('Loading initial model + optimizer...')
@@ -123,7 +124,6 @@ def main():
                        num_epochs=args.num_epochs,pred_criterion=pred_criterion,
                        intervention_loss=False,early_stop=args.early_stop,
                        tol=args.tol,verbose=True,task=task)
-
 
         # save model + optimizer
         torch.save(model.state_dict(),os.path.join(model_dir,model_file_name))
@@ -140,23 +140,22 @@ def main():
                                                        args.dim_hidden,args.n_layers)
     if not os.path.exists(os.path.join(model_dir,model_file_name)):
         print('Continue training (baseline)...')
-        train_model_dataloader(model,train_loader,args.model_type,optimizer,device,
+        loss_df = train_model_dataloader(model,train_loader,args.model_type,optimizer,device,
                        num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
                        intervention_loss=False,early_stop=args.early_stop,
                        tol=args.tol,verbose=True,task=task)
             
         # save model
+        loss_file_name = model_file_name.split('.pt')[0] + '.loss.tsv'
+        loss_df.to_csv(os.path.join(model_dir,loss_file_name),sep='\t')
         torch.save(model.state_dict(),os.path.join(model_dir,model_file_name))
     
-
-    model_file_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}.pt'.format(args.model_type,args.K,
+    model_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}'.format(args.model_type,args.K,
                                                                 args.dim_hidden,args.n_layers,
                                                                 '_'.join(map(str,args.lam_causal)),
                                                                 args.n_interventions)
-    optimizer_file_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}.optimizer.pt'.format(args.model_type,args.K,
-                                                                args.dim_hidden,args.n_layers,
-                                                                '_'.join(map(str,args.lam_causal)),
-                                                                args.n_interventions)
+    model_file_name = '{}.pt'.format(model_name)
+    optimizer_file_name = '{}.optimizer.pt'.format(model_name)
 
     if not os.path.exists(os.path.join(model_dir,model_file_name)):
         print('Continue training (causal)...')
