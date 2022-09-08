@@ -90,7 +90,7 @@ def compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
     if loss_ratio:
         # relu = nn.ReLU()
         causal_effect = interv_pred_loss/(1e-10 + pred_loss)
-        causal_effect = 1/(1+torch.exp(-1*(causal_effect-1)))
+        causal_effect = 1/(1+torch.exp(-10*(causal_effect-1)))
     else:
         causal_effect = interv_pred_loss - pred_loss
         causal_effect = 1/(1+torch.exp(-1*(causal_effect-1)))
@@ -164,8 +164,8 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
         causal_effect = torch.nan_to_num(causal_effect,nan=1e-10)
         
         if shuffle_effect:
-            # causal_effect = causal_effect[torch.randperm(causal_effect.size(0))]
-            causal_effect = torch.rand(causal_effect.size(0)).to(causal_effect.device)
+            causal_effect = causal_effect[torch.randperm(causal_effect.size(0))]
+            # causal_effect = torch.rand(causal_effect.size(0)).to(causal_effect.device)
 
         # weight loss function
         if weight_by_degree:

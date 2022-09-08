@@ -13,21 +13,30 @@ from run import instantiate_model
 
 def evaluate_single_model(model_type,evaluator,model,dataloader,device=0,task='gpp',mask_attr=None):
     
-    _,preds = run_epoch_dataloader(0,model,dataloader,model_type=model_type,
-                                 device=device,verbose=False,train=False,task=task,
-                                 mask_attr=mask_attr)
-
-    if task == 'npp':
-        y_pred = preds.argmax(1).unsqueeze(-1).detach().cpu().data.numpy()
-    else:
-        y_pred = preds
+    # _,preds = run_epoch_dataloader(0,model,dataloader,model_type=model_type,
+    #                              device=device,verbose=False,train=False,task=task,
+    #                              mask_attr=mask_attr)
 
     if task != 'lpp':
+        y_pred_list = []
         y_true_list = []
         for batch in dataloader:
             batch_mask = getattr(batch,mask_attr) if hasattr(batch,str(mask_attr)) \
                                     else torch.ones(batch.y.size(0)).bool().to(batch.y.device)
+            if task == 'gpp':
+                batch_pred,_ = model(batch.x,batch.edge_index,batch.ptr,batch.edge_attr)
+            else:
+                batch_pred,_ = model(batch.x,batch.edge_index,batch.edge_attr)
+            y_pred_list.append(batch_pred[batch_mask])
             y_true_list.append(batch.y[batch_mask])
+            
+        y_pred = torch.cat(y_pred_list)
+        if task == 'npp':
+            y_pred = y_pred.argmax(1).unsqueeze(-1)
+        else:
+            y_pred = y_pred
+        y_pred = y_pred.data.numpy()
+        
         y_true = torch.cat(y_true_list)
         y_true = y_true.unsqueeze(-1) if y_true.dim() == 1 else y_true
         y_true = y_true.data.numpy()
@@ -50,7 +59,7 @@ class KendallEvaluator:
 
     def eval(self,data_dict):
 
-        rank_y_pred = rankdata(data_dict["y_pred"].cpu().data.numpy())
+        rank_y_pred = rankdata(data_dict["y_pred"])
         rank_y_true = rankdata(data_dict["y_true"])
 
         return {'kendall': kendalltau(rank_y_pred,rank_y_true)[0]}
@@ -71,9 +80,10 @@ def load_model(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,n_layers,
     return model
 
 def load_model_gcn(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,n_layers,edge_dim,save_dir,
-               base=True,lc=None,ni=None,n_embeddings=None,attn_thresh=None,base_gcn=False):
+               base=True,lc=None,ni=None,n_embeddings=None,attn_thresh=None,base_gcn=False,verbose=False,
+               gcn_dim_hidden=200):
     
-    model = instantiate_model(dataset_name,'gcnconv',dim_in,dim_hidden,dim_out,
+    model = instantiate_model(dataset_name,'gcnconv',dim_in,gcn_dim_hidden,dim_out,
                       heads,n_layers,edge_dim,n_embeddings=n_embeddings)
 
     if base:
@@ -83,6 +93,10 @@ def load_model_gcn(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,n_lay
     else:
         model_file_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}.gcn.thresh{}.pt'.format(model_type,heads,dim_hidden,n_layers,
                                                                               lc,ni,attn_thresh)
+        
+    if verbose:
+        print(model_file_name)
+        
     model.load_state_dict(torch.load(os.path.join(save_dir,model_file_name)))
 
     return model
@@ -141,10 +155,9 @@ def evaluate_models(dataset_name,valid_loader,test_loader,evaluator,save_dir,par
     return results_df
 
 def evaluate_models_gcn_base(dataset_name,evaluator,save_dir,params_dict,
-                    eval_metric='acc',device=0,suffix='interv',task='npp',batch_size=5000,attn_thresh=0.1):
-    
-    train_loader,valid_loader,test_loader = load_dataloader(dataset_name,batch_size=batch_size)
-    
+                    eval_metric='acc',device=0,suffix='interv',task='npp',batch_size=5000,attn_thresh=0.1,trial_no=0,
+                    gcn_dim_hidden=20):
+        
     orig_save_dir = os.path.join(save_dir,'models')
     rewire_save_dir = os.path.join(save_dir,'models_rewire')
     
@@ -158,20 +171,22 @@ def evaluate_models_gcn_base(dataset_name,evaluator,save_dir,params_dict,
             for n_layers in params_dict['nl']:
                   
                 # reload dataloader
-                train_loader,valid_loader,test_loader = load_dataloader(dataset_name,batch_size=batch_size)
-
+                train_loader,valid_loader,test_loader = load_dataloader(dataset_name,batch_size=batch_size,shuffle_train=False)
                 dim_in,dim_out,edge_dim,_ = get_dataset_params(dataset_name,valid_loader,dim_hidden)
                 n_embeddings = valid_loader.data.num_nodes if dataset_name == 'ogbl-ddi' else None
 
-                model_gcn = load_model_gcn(dataset_name,model_type,0,dim_in,dim_hidden,dim_out,
+                model_gcn = load_model_gcn(dataset_name,model_type + '.trial{}'.format(trial_no),0,dim_in,dim_hidden,dim_out,
                                          n_layers,edge_dim,rewire_save_dir,base=False,lc=None,ni=None,n_embeddings=n_embeddings,
-                                         attn_thresh=attn_thresh,base_gcn=True)
+                                         attn_thresh=attn_thresh,base_gcn=True,gcn_dim_hidden=gcn_dim_hidden,verbose=False)
 
+                train_results = evaluate_single_model(model_type,evaluator,model_gcn,train_loader,
+                                                        task=task,device=device,mask_attr='train_mask')[eval_metric]
                 valid_results = evaluate_single_model(model_type,evaluator,model_gcn,valid_loader,
                                                         task=task,device=device,mask_attr='val_mask')[eval_metric]
                 test_results = evaluate_single_model(model_type,evaluator,model_gcn,test_loader,
                                                        task=task,device=device,mask_attr='test_mask')[eval_metric]
-
+                
+                add_results_to_dict(data_dict,model_type,True,n_layers,0,dim_hidden,0,0,'train',eval_metric,train_results)
                 add_results_to_dict(data_dict,model_type,True,n_layers,0,dim_hidden,0,0,'valid',eval_metric,valid_results)
                 add_results_to_dict(data_dict,model_type,True,n_layers,0,dim_hidden,0,0,'test',eval_metric,test_results)
                 
@@ -182,10 +197,9 @@ def evaluate_models_gcn_base(dataset_name,evaluator,save_dir,params_dict,
     return results_df
 
 def evaluate_models_gcn(dataset_name,evaluator,save_dir,params_dict,
-                    eval_metric='acc',device=0,suffix='interv',task='npp',batch_size=5000,attn_thresh=0.1):
+                    eval_metric='acc',device=0,suffix='interv',task='npp',batch_size=5000,attn_thresh=0.1,trial_no=0,
+                    gcn_dim_hidden=20):
     
-    train_loader,valid_loader,test_loader = load_dataloader(dataset_name,batch_size=batch_size)
-
     orig_save_dir = os.path.join(save_dir,'models')
     rewire_save_dir = os.path.join(save_dir,'models_rewire')
 
@@ -199,54 +213,63 @@ def evaluate_models_gcn(dataset_name,evaluator,save_dir,params_dict,
                 for heads in params_dict['heads']:
                     
                     # reload dataloader
-                    train_loader,valid_loader,test_loader = load_dataloader(dataset_name,batch_size=batch_size)
-
+                    train_loader,valid_loader,test_loader = load_dataloader(dataset_name,batch_size=batch_size,shuffle_train=False)
                     dim_in,dim_out,edge_dim,_ = get_dataset_params(dataset_name,valid_loader,dim_hidden)
                     n_embeddings = valid_loader.data.num_nodes if dataset_name == 'ogbl-ddi' else None
 
                     # graph attention network
                     model = load_model(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,
                                      n_layers,edge_dim,orig_save_dir,base=True,lc=None,ni=None,n_embeddings=n_embeddings)
-
+                    rewired_train_loader = generate_rewired_dataloader(model,train_loader,attn_thresh=attn_thresh,
+                                                                     batch_size=batch_size,shuffle=False,verbose=False)
                     rewired_valid_loader = generate_rewired_dataloader(model,valid_loader,attn_thresh=attn_thresh,
                                                                      batch_size=batch_size,shuffle=False,verbose=False)
                     rewired_test_loader = generate_rewired_dataloader(model,test_loader,attn_thresh=attn_thresh,
                                                                     batch_size=batch_size,shuffle=False,verbose=False)
 
-                    model_gcn = load_model_gcn(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,
-                                         n_layers,edge_dim,rewire_save_dir,base=True,lc=None,ni=None,n_embeddings=n_embeddings,
-                                         attn_thresh=attn_thresh)
-
+                    model_gcn = load_model_gcn(dataset_name,model_type + '.trial{}'.format(trial_no),heads,dim_in,dim_hidden,dim_out,
+                                         n_layers,edge_dim,rewire_save_dir,base_gcn=False,base=True,
+                                         lc=None,ni=None,n_embeddings=n_embeddings,
+                                         attn_thresh=attn_thresh,gcn_dim_hidden=gcn_dim_hidden,verbose=False)
+                    
+                    train_results = evaluate_single_model(model_type,evaluator,model_gcn,rewired_train_loader,
+                                                        task=task,device=device,mask_attr='train_mask')[eval_metric]
                     valid_results = evaluate_single_model(model_type,evaluator,model_gcn,rewired_valid_loader,
                                                         task=task,device=device,mask_attr='val_mask')[eval_metric]
                     test_results = evaluate_single_model(model_type,evaluator,model_gcn,rewired_test_loader,
                                                        task=task,device=device,mask_attr='test_mask')[eval_metric]
                     
+                    add_results_to_dict(data_dict,model_type,True,n_layers,heads,dim_hidden,0,0,'train',eval_metric,train_results)
                     add_results_to_dict(data_dict,model_type,True,n_layers,heads,dim_hidden,0,0,'valid',eval_metric,valid_results)
                     add_results_to_dict(data_dict,model_type,True,n_layers,heads,dim_hidden,0,0,'test',eval_metric,test_results)
 
                     for lc in params_dict['lc']:
                         for ni in params_dict['ni']:
                             # reload dataloader
-                            train_loader,valid_loader,test_loader = load_dataloader(dataset_name,batch_size=batch_size)
-
+                            train_loader,valid_loader,test_loader = load_dataloader(dataset_name,batch_size=batch_size,shuffle_train=False)
 
                             # graph attention network (causal)
                             model = load_model(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,
                                              n_layers,edge_dim,orig_save_dir,base=False,lc=lc,ni=ni,n_embeddings=n_embeddings)
-
+                            rewired_train_loader = generate_rewired_dataloader(model,train_loader,attn_thresh=attn_thresh,
+                                                                             batch_size=batch_size,shuffle=False,verbose=False)
                             rewired_valid_loader = generate_rewired_dataloader(model,valid_loader,attn_thresh=attn_thresh,
                                                                              batch_size=batch_size,shuffle=False,verbose=False)
                             rewired_test_loader = generate_rewired_dataloader(model,test_loader,attn_thresh=attn_thresh,
                                                                             batch_size=batch_size,shuffle=False,verbose=False)
 
-                            model_gcn = load_model_gcn(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,
+                            model_gcn = load_model_gcn(dataset_name,model_type + '.trial{}'.format(trial_no),heads,dim_in,dim_hidden,dim_out,
                                                  n_layers,edge_dim,rewire_save_dir,base=False,lc=lc,ni=ni,n_embeddings=n_embeddings,
-                                                 attn_thresh=attn_thresh)
-
-                            valid_results = evaluate_single_model(model_type,evaluator,model_gcn,rewired_valid_loader,task=task,device=device)[eval_metric]
-                            test_results = evaluate_single_model(model_type,evaluator,model_gcn,rewired_test_loader,task=task,device=device)[eval_metric]
-
+                                                 attn_thresh=attn_thresh,gcn_dim_hidden=gcn_dim_hidden,verbose=False)
+                            
+                            train_results = evaluate_single_model(model_type,evaluator,model_gcn,rewired_train_loader,
+                                                                task=task,device=device,mask_attr='train_mask')[eval_metric]
+                            valid_results = evaluate_single_model(model_type,evaluator,model_gcn,rewired_valid_loader,
+                                                                task=task,device=device,mask_attr='val_mask')[eval_metric]
+                            test_results = evaluate_single_model(model_type,evaluator,model_gcn,rewired_test_loader,
+                                                               task=task,device=device,mask_attr='test_mask')[eval_metric]
+                    
+                            add_results_to_dict(data_dict,model_type,False,n_layers,heads,dim_hidden,lc,ni,'train',eval_metric,train_results)
                             add_results_to_dict(data_dict,model_type,False,n_layers,heads,dim_hidden,lc,ni,'valid',eval_metric,valid_results)
                             add_results_to_dict(data_dict,model_type,False,n_layers,heads,dim_hidden,lc,ni,'test',eval_metric,test_results)
 
@@ -277,7 +300,7 @@ def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_
     plot_df = pd.DataFrame(plot_dict)
 
     plot_df['model'] = [n.split('conv')[0] for n in plot_df['model']]
-    plot_df['hd'] = [n.split('.')[1][2:] for n in plot_df['params']]
+    plot_df['hd'] = [int(n.split('.')[1][2:]) for n in plot_df['params']]
     plot_df['lc'] = [float(n.split('lc')[1].split('.ni')[0]) for n in plot_df['params']]
     plot_df['ni'] = [int(n.split('ni')[1]) for n in plot_df['params']]
     plot_df['heads'] = [int(n.split('heads')[0].split('.')[-1]) for n in plot_df['params']]
@@ -356,7 +379,7 @@ def plot_rand_comparison(plot_df_orig,plot_df_rand,eval_metric,alpha_feat='lc',s
     
 model_color = {'gat': 'green', 'gatv2': 'blue', 'transformer': 'red'}
 
-def plot_attention(all_results,base_results_df,eval_set,eval_metric,save_path=None):
+def plot_attention(all_results,eval_set,eval_metric,save_path=None,base_results_df=None):
     
     eval_df = all_results[all_results['set'] == eval_set]
 
@@ -371,8 +394,10 @@ def plot_attention(all_results,base_results_df,eval_set,eval_metric,save_path=No
         plt.plot(model_df[model_df['base']]['attn'],model_df[model_df['base']][eval_metric],
                color=model_color[model],label=model,linewidth=5,linestyle='dotted')
 
-    plt.axhline(y=base_results_df.loc[eval_set][eval_metric],
-                color='black',linestyle='--',linewidth=2,label='GCN without rewiring')
+    if base_results_df is not None:
+        plt.axhline(y=base_results_df.loc[eval_set][eval_metric],
+                    color='black',linestyle='--',linewidth=2,label='GCN without rewiring')
+        
     plt.legend(fontsize=16,bbox_to_anchor=(1,1),frameon=False)
 
     plt.title(eval_set.upper(),fontsize=20)

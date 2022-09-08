@@ -13,11 +13,9 @@ from models import *
 from causal import *
         
 def instantiate_model(dataset_name,model_type,dim_in,dim_hidden,dim_out,
-                      heads,n_layers,edge_dim,n_embeddings=None,seed=1):
+                      heads,n_layers,edge_dim,n_embeddings=None):
     
-    torch.manual_seed(seed)
-    
-    if 'ogbn' in dataset_name or dataset_name in NODE_CLASS_DATASETS:
+    if 'ogbn' in dataset_name or dataset_name in ['Cora','CiteSeer','PubMed','cornell','wisconsin','texas']:
         model = GATNode(model_type,dim_in,dim_hidden,dim_out,
                           heads,n_layers,edge_dim)
 
@@ -55,7 +53,6 @@ def main():
     parser.add_argument('-tol', dest='tol',type=float,default=1e-5)
     parser.add_argument('-es', dest='early_stop',type=int,default=1)
     parser.add_argument('-ni', dest='n_interventions',type=int,default=10)
-    parser.add_argument('-sn', dest='split_no',type=int,default=0)
 
     args = parser.parse_args()
     
@@ -67,13 +64,12 @@ def main():
     print('Loading data...')
     
     if 'ogbg-mol' in args.dataset:
-        batch_size = 10000 if 'molpcba' in args.dataset else 50000
-    elif 'ogbn' in args.dataset or args.dataset in NODE_CLASS_DATASETS:
-        batch_size = 5000
+        train_loader,_,_ = load_dataloader(args.dataset,batch_size=50000)
+    elif 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed','cornell','texas','wisconsin']:
+        train_loader,_,_ = load_dataloader(args.dataset,batch_size=5000)
     elif 'ogbl' in args.dataset:
-        batch_size = 100000
-        
-    train_loader,valid_loader,_ = load_dataloader(args.dataset,batch_size=batch_size,split_no=args.split_no)
+        train_loader,_,_ = load_dataloader(args.dataset,batch_size=100000)
+
     dim_in,dim_out,edge_dim,pred_criterion = get_dataset_params(args.dataset,train_loader,args.dim_hidden)
     
     print('Initializing Models...')
@@ -88,7 +84,7 @@ def main():
                               heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,
                               n_embeddings=n_embeddings)
     
-    if 'ogbn' in args.dataset or args.dataset in NODE_CLASS_DATASETS:
+    if 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed','cornell','texas','wisconsin']:
         task = 'npp'
     elif 'ogbg' in args.dataset:
         task = 'gpp'
@@ -127,7 +123,7 @@ def main():
         train_model_dataloader(model,train_loader,args.model_type,optimizer,device,
                        num_epochs=args.num_epochs,pred_criterion=pred_criterion,
                        intervention_loss=False,early_stop=args.early_stop,
-                       tol=args.tol,verbose=True,task=task,valid_dataloader=valid_loader)
+                       tol=args.tol,verbose=True,task=task)
 
         # save model + optimizer
         torch.save(model.state_dict(),os.path.join(model_dir,model_file_name))
@@ -140,37 +136,24 @@ def main():
                     lr=initial_learning_rate, betas=(beta_1, beta_2))
     optimizer_causal.load_state_dict(optimizer.state_dict())
     
-
-    if args.dataset in DATASETS_SPLITS:
-        model_name = '{}.{}.base.{}heads.{}hd.nl{}'.format(args.model_type,args.split_no,args.K,
-                                                    args.dim_hidden,args.n_layers)
-    else:
-        model_name = '{}.base.{}heads.{}hd.nl{}'.format(args.model_type,args.K,
-                                                    args.dim_hidden,args.n_layers)
-    model_file_name = '{}.pt'.format(model_name)
-    
+    model_file_name = '{}.base.{}heads.{}hd.nl{}.pt'.format(args.model_type,args.K,
+                                                       args.dim_hidden,args.n_layers)
     if not os.path.exists(os.path.join(model_dir,model_file_name)):
         print('Continue training (baseline)...')
         loss_df = train_model_dataloader(model,train_loader,args.model_type,optimizer,device,
                        num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
                        intervention_loss=False,early_stop=args.early_stop,
-                       tol=args.tol,verbose=True,task=task,valid_dataloader=valid_loader)
+                       tol=args.tol,verbose=True,task=task)
             
         # save model
         loss_file_name = model_file_name.split('.pt')[0] + '.loss.tsv'
         loss_df.to_csv(os.path.join(model_dir,loss_file_name),sep='\t')
         torch.save(model.state_dict(),os.path.join(model_dir,model_file_name))
     
-    if args.dataset in DATASETS_SPLITS:
-        model_name = '{}.{}.{}heads.{}hd.nl{}.lc{}.ni{}'.format(args.model_type,args.split_no,args.K,
-                                                             args.dim_hidden,args.n_layers,
-                                                             '_'.join(map(str,args.lam_causal)),
-                                                             args.n_interventions)
-    else:
-        model_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}'.format(args.model_type,args.K,
-                                                             args.dim_hidden,args.n_layers,
-                                                             '_'.join(map(str,args.lam_causal)),
-                                                             args.n_interventions)
+    model_name = '{}.{}heads.{}hd.nl{}.lc{}.ni{}'.format(args.model_type,args.K,
+                                                                args.dim_hidden,args.n_layers,
+                                                                '_'.join(map(str,args.lam_causal)),
+                                                                args.n_interventions)
     model_file_name = '{}.pt'.format(model_name)
     optimizer_file_name = '{}.optimizer.pt'.format(model_name)
 
@@ -180,8 +163,7 @@ def main():
                                num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
                                early_stop=args.early_stop,tol=args.tol,verbose=True,
                                intervention_loss=True,lam_causal=args.lam_causal,
-                               n_interventions_per_node=args.n_interventions,task=task,
-                               valid_dataloader=valid_loader)
+                               n_interventions_per_node=args.n_interventions,task=task)
 
         # save model
         loss_file_name = model_file_name.split('.pt')[0] + '.loss.tsv'

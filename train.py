@@ -148,15 +148,16 @@ from causal import *
         
 def train_model_dataloader(model,dataloader,model_type,optimizer,device=0,
                            num_epochs=10,pred_criterion=nn.BCELoss(),
-                           early_stop=True,tol=1e-5,verbose=True,
+                           early_stop=True,tol=1e-3,verbose=True,
                            intervention_loss=False,lam_causal=1,
-                           n_interventions_per_node=10,task='npp'):
+                           n_interventions_per_node=10,task='npp',
+                           valid_dataloader=None):
         
     past_loss = 1e10
-    epoch_loss_list = []
     loss_df = {}
     for epoch_no in range(num_epochs):
-         
+        
+        start = time.time()
         loss_dict,_ = run_epoch_dataloader(epoch_no,model,dataloader,model_type=model_type,
                                            optimizer=optimizer,device=device,
                                            verbose=verbose,train=True,
@@ -168,19 +169,44 @@ def train_model_dataloader(model,dataloader,model_type,optimizer,device=0,
         if epoch_no == 0:
             loss_df = {k: [] for k in loss_dict.keys()}
             loss_df['epoch_no'] = []
+            if early_stop:
+                loss_df['val_pred_loss'] = []
         
         for k,v in loss_dict.items():
             loss_df[k].append(v)
         loss_df['epoch_no'].append(epoch_no)
-        
-        current_loss = loss_dict['total_loss']
-        epoch_loss_list.append(current_loss)
-        if early_stop and epoch_no > 10:
-            prev_last_5 = np.array(epoch_loss_list[-10:-5]).mean()
-            last_5 = np.array(epoch_loss_list[-5:]).mean()
-            if abs(prev_last_5 - last_5)/abs(prev_last_5) < tol:
-                break
                 
+        N = 5
+        if early_stop:
+            val_loss_dict,_ = run_epoch_dataloader(epoch_no,model,valid_dataloader,model_type=model_type,
+                                           optimizer=optimizer,device=device,
+                                           verbose=verbose,train=False,
+                                           pred_criterion=pred_criterion,
+                                           intervention_loss=intervention_loss,
+                                           task=task,mask_attr='val_mask')
+            loss_df['val_pred_loss'].append(val_loss_dict['pred_loss'])
+            
+            if epoch_no > N:
+                prev_last_N = np.array(loss_df['val_pred_loss'][-N-1:-1]).mean()
+                last_N = np.array(loss_df['val_pred_loss'][-N:]).mean()
+                if (prev_last_N - last_N)/abs(prev_last_N) < tol:
+                    print('--- EARLY STOP: EPOCH {} ---'.format(epoch_no))
+                    break
+                
+        end = time.time()
+                
+        if verbose and (epoch_no+1) % 5 == 0:
+            # mode = 'train' if train else 'test'
+            print_str = 'Epoch {} ({:.5f} seconds)'.format(
+                epoch_no,end-start)
+            print_str += ': total loss {:.5f}, pred loss {:.5f}'.format(loss_df['total_loss'][-1],
+                                                                        loss_df['pred_loss'][-1])
+            if intervention_loss:
+                print_str += ', interv loss {:.5f}'.format(loss_df['intervention_loss'][-1])
+            if early_stop:
+                print_str += ', val pred loss {:.5f}'.format(loss_df['val_pred_loss'][-1])
+            print(print_str)
+        
     return pd.DataFrame(loss_df)
                     
 def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
@@ -195,6 +221,7 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
     torch.manual_seed(epoch_no)
     
     start = time.time()
+    n_examples = 0
     total_loss = 0
     total_pred_loss = 0
     total_intervention_loss = 0
@@ -245,23 +272,22 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
             
         batch_mask = getattr(batch,mask_attr) if hasattr(batch,str(mask_attr)) \
                                 else torch.ones(Y.size(0)).bool().to(Y.device)
+        nan_mask = ~torch.isnan(Y[batch_mask])
+
+        if 'weight' in model_type:
+            percent_pos = torch.nanmean(batch.y,0)
+            weight = (1-percent_pos)/percent_pos
+            weight = torch.tile(weight,(batch.y.size(0),1))
+            weight = torch.nan_to_num(weight,posinf=1)
+            weight[(batch.y == 0) | (batch.y.isnan())] = 1
+            pred_criterion.weight = weight[nan_mask]
+
+        # prediction loss
+        batch_loss = 0
+        pred_loss = pred_criterion(preds[batch_mask][nan_mask],
+                                   Y[batch_mask][nan_mask]).mean()
+
         if train:
-            
-            nan_mask = ~torch.isnan(Y[batch_mask])
-            
-            if 'weight' in model_type:
-                percent_pos = torch.nanmean(batch.y,0)
-                weight = (1-percent_pos)/percent_pos
-                weight = torch.tile(weight,(batch.y.size(0),1))
-                weight = torch.nan_to_num(weight,posinf=1)
-                weight[(batch.y == 0) | (batch.y.isnan())] = 1
-                pred_criterion.weight = weight[nan_mask]
-                
-            # prediction loss
-            pred_loss = pred_criterion(preds[batch_mask][nan_mask],
-                                       Y[batch_mask][nan_mask]).mean()
-            
-            batch_loss = 0
             
             if 'adversarial' in model_type:
                 sampling = 'adversarial'
@@ -311,34 +337,30 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
             
             optimizer.zero_grad()
             batch_loss.backward()
+                        
             optimizer.step()
             
             # if 'adversarial' in model_type:
             #     attn_grads = attn_weights.grad.mean(1)
             
-            total_loss += batch_loss.detach().cpu().data.numpy()
-            total_pred_loss += pred_loss.detach().cpu().data.numpy()
-            total_intervention_loss += causal_loss.detach().cpu().data.numpy()
+            batch_size = preds[batch_mask].size(0)
+            n_examples += batch_size
+            
+            total_loss += batch_loss.detach().cpu().data.numpy()*batch_size
+            total_pred_loss += pred_loss.detach().cpu().data.numpy()*batch_size
+            total_intervention_loss += causal_loss.detach().cpu().data.numpy()*batch_size
             
         else:
+            batch_size = preds[batch_mask].size(0)
+            n_examples += batch_size
+            total_pred_loss += pred_loss.detach().cpu().data.numpy()*batch_size
             preds_list.append(preds[batch_mask].detach())
                     
     end = time.time()
-    
-    if verbose and (epoch_no+1) % 5 == 0:
-        mode = 'train' if train else 'test'
-        print_str = 'Epoch {} ({:.5f} seconds)'.format(
-            epoch_no,end-start)
-        if train:
-            print_str += ': total loss {:.5f}, pred loss {:.5f}'.format(total_loss,
-                                                                        total_pred_loss)
-            if intervention_loss:
-                print_str += ', interv loss {:.5f}'.format(total_intervention_loss)
-        print(print_str)
         
-    loss_dict = {'total_loss': total_loss,
-                 'pred_loss': total_pred_loss,
-                 'intervention loss': total_intervention_loss
+    loss_dict = {'total_loss': total_loss/n_examples,
+                 'pred_loss': total_pred_loss/n_examples,
+                 'intervention_loss': total_intervention_loss/n_examples
                  }
     preds = None if train else torch.cat(preds_list)
     

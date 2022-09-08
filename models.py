@@ -11,7 +11,7 @@ class GCNConvBase(nn.Module):
     def __init__(self,dim_in,dim_out):
         super(GCNConvBase, self).__init__()
 
-        self.gcn = GCNConv(dim_in,dim_out,add_self_loops=False)
+        self.gcn = GCNConv(dim_in,dim_out,add_self_loops=False,normalize=False,bias=True)
     
     def forward(self,x,edge_index,edge_attr,return_attention_weights):
         return self.gcn(x,edge_index),(None,None)
