@@ -69,11 +69,13 @@ def main():
     if 'ogbg-mol' in args.dataset:
         batch_size = 10000 if 'molpcba' in args.dataset else 50000
     elif 'ogbn' in args.dataset or args.dataset in NODE_CLASS_DATASETS:
-        batch_size = 5000
+        batch_size = 10000
     elif 'ogbl' in args.dataset:
-        batch_size = 100000
+        batch_size = 500000
         
-    train_loader,valid_loader,_ = load_dataloader(args.dataset,batch_size=batch_size,split_no=args.split_no)
+    sample_neighbors = 'sample' in args.model_type
+    train_loader,valid_loader,_ = load_dataloader(args.dataset,batch_size=batch_size,
+                                                  split_no=args.split_no,sample_neighbors=sample_neighbors)
     dim_in,dim_out,edge_dim,pred_criterion = get_dataset_params(args.dataset,train_loader,args.dim_hidden)
     
     print('Initializing Models...')
@@ -151,6 +153,7 @@ def main():
     
     if not os.path.exists(os.path.join(model_dir,model_file_name)):
         print('Continue training (baseline)...')
+        train_start = time.time()
         loss_df = train_model_dataloader(model,train_loader,args.model_type,optimizer,device,
                        num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
                        intervention_loss=False,early_stop=args.early_stop,
@@ -160,6 +163,8 @@ def main():
         loss_file_name = model_file_name.split('.pt')[0] + '.loss.tsv'
         loss_df.to_csv(os.path.join(model_dir,loss_file_name),sep='\t')
         torch.save(model.state_dict(),os.path.join(model_dir,model_file_name))
+        np.savetxt(os.path.join(model_dir,'time.' + model_file_name),
+                       np.array([time.time()-train_start]))
     
     if args.dataset in DATASETS_SPLITS:
         model_name = '{}.{}.{}heads.{}hd.nl{}.lc{}.ni{}'.format(args.model_type,args.split_no,args.K,
@@ -175,10 +180,12 @@ def main():
     optimizer_file_name = '{}.optimizer.pt'.format(model_name)
 
     if not os.path.exists(os.path.join(model_dir,model_file_name)):
+        train_start = time.time()
         print('Continue training (causal)...')
         loss_df = train_model_dataloader(model_causal,train_loader,args.model_type,optimizer_causal,device,
                                num_epochs=args.num_epochs_tuning,pred_criterion=pred_criterion,
                                early_stop=args.early_stop,tol=args.tol,verbose=True,
+                               n_layers=args.n_layers,
                                intervention_loss=True,lam_causal=args.lam_causal,
                                n_interventions_per_node=args.n_interventions,task=task,
                                valid_dataloader=valid_loader)
@@ -187,7 +194,9 @@ def main():
         loss_file_name = model_file_name.split('.pt')[0] + '.loss.tsv'
         loss_df.to_csv(os.path.join(model_dir,loss_file_name),sep='\t')
         torch.save(model_causal.state_dict(),os.path.join(model_dir,model_file_name))
-        torch.save(optimizer.state_dict(),os.path.join(model_dir,optimizer_file_name))
+        np.savetxt(os.path.join(model_dir,'time.' + model_file_name),
+                       np.array([time.time()-train_start]))
+        # torch.save(optimizer.state_dict(),os.path.join(model_dir,optimizer_file_name))
 
     print('Total Time: {} seconds'.format(time.time()-start))
 

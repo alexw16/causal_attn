@@ -150,6 +150,7 @@ def train_model_dataloader(model,dataloader,model_type,optimizer,device=0,
                            num_epochs=10,pred_criterion=nn.BCELoss(),
                            early_stop=True,tol=1e-3,verbose=True,
                            intervention_loss=False,lam_causal=1,
+                           n_layers=1,
                            n_interventions_per_node=10,task='npp',
                            valid_dataloader=None):
         
@@ -162,6 +163,7 @@ def train_model_dataloader(model,dataloader,model_type,optimizer,device=0,
                                            optimizer=optimizer,device=device,
                                            verbose=verbose,train=True,
                                            pred_criterion=pred_criterion,
+                                           n_layers=n_layers,
                                            intervention_loss=intervention_loss,
                                            lam_causal=lam_causal,
                                            n_interventions_per_node=n_interventions_per_node,
@@ -175,8 +177,22 @@ def train_model_dataloader(model,dataloader,model_type,optimizer,device=0,
         for k,v in loss_dict.items():
             loss_df[k].append(v)
         loss_df['epoch_no'].append(epoch_no)
-                
-        N = 5
+          
+        if 'early_stop100' in model_type:
+            N = 100
+        elif 'early_stop10' in model_type:
+            N = 10
+        elif 'early_stop20' in model_type:
+            N = 20
+        elif 'early_stop50' in model_type:
+            N = 50
+        elif 'early_stop3' in model_type:
+            N = 3
+        elif 'early_stop1' in model_type:
+            N = 1
+        else:
+            N = 5
+            
         if early_stop:
             val_loss_dict,_ = run_epoch_dataloader(epoch_no,model,valid_dataloader,model_type=model_type,
                                            optimizer=optimizer,device=device,
@@ -186,8 +202,8 @@ def train_model_dataloader(model,dataloader,model_type,optimizer,device=0,
                                            task=task,mask_attr='val_mask')
             loss_df['val_pred_loss'].append(val_loss_dict['pred_loss'])
             
-            if epoch_no > N:
-                prev_last_N = np.array(loss_df['val_pred_loss'][-N-1:-1]).mean()
+            if epoch_no >= 2*N-1:
+                prev_last_N = np.array(loss_df['val_pred_loss'][-2*N:-N]).mean()
                 last_N = np.array(loss_df['val_pred_loss'][-N:]).mean()
                 if (prev_last_N - last_N)/abs(prev_last_N) < tol:
                     print('--- EARLY STOP: EPOCH {} ---'.format(epoch_no))
@@ -213,7 +229,7 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                     optimizer=None,device=0,
                     verbose=True,train=True,
                     pred_criterion=nn.BCELoss(),
-                    intervention_loss=False,
+                    intervention_loss=False,n_layers=1,
                     lam_causal=1,n_interventions_per_node=10,
                     task='npp',mask_attr=None):
         
@@ -233,11 +249,10 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
     for batch in dataloader:
                 
         batch = batch.to(device)
-        
         X = batch.x
         batch_edge_index = batch.edge_index
         batch_edge_attr = batch.edge_attr if hasattr(batch, 'edge_attr') else None
-        
+
         if task == 'npp' or task == 'gpp':
             Y = batch.y
             batch_edge_index_pred  = None
@@ -255,20 +270,20 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
 
             else:
                 Y = batch.edge_label
-                batch_edge_index = batch.edge_index
-                batch_edge_index_pred = batch.edge_label_index
+                batch_edge_index_pred = torch.clone(batch.edge_label_index)
 
         # node-level predictions
         if task == 'npp':
             batch_ptr = None
-            preds,attn_weights = model(X,batch_edge_index,batch_edge_attr)
+            preds,(batch_edge_index,attn_weights) = model(X,batch_edge_index,batch_edge_attr)
         elif task == 'gpp':
             batch_ptr = batch.ptr #.to(device)
-            preds,attn_weights = model(X,batch_edge_index,batch_ptr,batch_edge_attr)
+            preds,(batch_edge_index,attn_weights) = model(X,batch_edge_index,batch_ptr,batch_edge_attr)
         elif task == 'lpp':
             batch_ptr = None
-            preds,attn_weights = model(X,batch_edge_index,batch_edge_index_pred,
-                                       batch_edge_attr)
+            # print(dataloader.data.x.shape,dataloader.data.edge_index.max()) #,batch.edge_label_index.max())
+            preds,(_,attn_weights) = model(X,batch_edge_index,batch_edge_index_pred,
+                                                          batch_edge_attr)
             
         batch_mask = getattr(batch,mask_attr) if hasattr(batch,str(mask_attr)) \
                                 else torch.ones(Y.size(0)).bool().to(Y.device)
@@ -303,6 +318,9 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
             # causal intervention loss
             causal_interv_loss = torch.zeros(1)
             loss_ratio = 'ratio' in model_type
+            loss_ratio = 'thresh' if 'thresh' in model_type else loss_ratio
+            use_labelprop = 'labelprop' in model_type
+            
             if intervention_loss:
                 
                 if task == 'npp':
@@ -322,10 +340,12 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                                         pred_criterion=pred_criterion,sampling=sampling,
                                         edge_sampling_values=edge_sampling_values,
                                         weight_by_degree=weight_by_degree,
+                                        n_layers=n_layers,
                                         n_interventions_per_node=n_interventions_per_node,
                                         task=task,ptr=batch_ptr,
                                         edge_indices_pred=batch_edge_index_pred,
-                                        loss_ratio=loss_ratio,shuffle_effect=shuffle_effect)
+                                        loss_ratio=loss_ratio,shuffle_effect=shuffle_effect,
+                                        use_labelprop=use_labelprop,lp_batch=batch)
             
             if isinstance(lam_causal,list):
                 lam_causal_tensor = torch.tensor(lam_causal).float().to(causal_interv_loss.device)

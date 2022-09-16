@@ -27,6 +27,7 @@ class GATBase(nn.Module):
         self.dim_out = dim_out
         self.heads = heads
         self.n_layers = n_layers
+        self.add_self_loops = 'self_loop' in model_type
 
         self.linearSeq = nn.Sequential(
                           nn.Linear(dim_in,dim_hidden,bias=True),
@@ -35,16 +36,15 @@ class GATBase(nn.Module):
         for n in range(self.n_layers):
             if 'gatconv' in model_type:
                 gat = GATConv((dim_hidden,dim_hidden),dim_hidden,
-                                         heads=heads,add_self_loops=False,
-                                         edge_dim=edge_dim,concat=False)
+                              heads=heads,add_self_loops=self.add_self_loops,
+                              edge_dim=edge_dim,concat=False)
             elif 'gatv2conv' in model_type:
                 gat = GATv2Conv((dim_hidden,dim_hidden),dim_hidden,
-                                         heads=heads,add_self_loops=False,
-                                         edge_dim=edge_dim,concat=False)
+                                heads=heads,add_self_loops=self.add_self_loops,
+                                edge_dim=edge_dim,concat=False)
             elif 'transformerconv' in model_type:
-                gat = TransformerConv(dim_hidden,dim_hidden,
-                                         heads=heads,
-                                         edge_dim=edge_dim,concat=False)
+                gat = TransformerConv(dim_hidden,dim_hidden,heads=heads,
+                                      edge_dim=edge_dim,concat=False)
             elif 'gcnconv' in model_type:
                 gat = GCNConvBase(dim_hidden,dim_hidden)
                 
@@ -70,15 +70,18 @@ class GATNode(GATBase):
         for n in range(self.n_layers):
             inp = h if n == 0 else out
             gat = getattr(self,'gat_{}'.format(n+1))
-            out,(_,attn_weights) = gat(inp,edge_indices,edge_attr=edge_attr,
+            out,(edge_inds,attn_weights) = gat(inp,edge_indices,edge_attr=edge_attr,
                                             return_attention_weights=True)
+            if self.add_self_loops:
+                edge_inds,attn_weights = remove_self_loops(edge_inds,attn_weights)
+                
             attn_weights_list.append(attn_weights)
         out = torch.cat([h,out],1)
         
         out = self.leakyrelu(out)
         out = self.linear_final(out)
 
-        return out,attn_weights_list
+        return out,(edge_inds,attn_weights_list)
     
 class GATLink(GATBase):
     def __init__(self,model_type,dim_in,dim_hidden,dim_out,
@@ -132,8 +135,11 @@ class GATGraph(GATBase):
         for n in range(self.n_layers):
             inp = h if n == 0 else out
             gat = getattr(self,'gat_{}'.format(n+1))
-            out,(_,attn_weights) = gat(inp,edge_indices,edge_attr=edge_attr,
+            out,(edge_inds,attn_weights) = gat(inp,edge_indices,edge_attr=edge_attr,
                                             return_attention_weights=True)
+            if self.add_self_loops:
+                edge_inds,attn_weights = remove_self_loops(edge_inds,attn_weights)
+                
             attn_weights_list.append(attn_weights)
         out = torch.cat([h,out],1)
         
@@ -142,7 +148,7 @@ class GATGraph(GATBase):
         out = self.leakyrelu(out)
         out = self.linear_final(out)
         
-        return out,attn_weights_list
+        return out,(edge_inds,attn_weights_list)
     
 class GATMolecule(nn.Module):
     def __init__(self,model_type,dim_in,dim_hidden,dim_out,
@@ -161,6 +167,4 @@ class GATMolecule(nn.Module):
         atom_emb = self.atom_encoder(X)
         edge_emb = self.bond_encoder(edge_attr)
                 
-        out,attn_weights_list = self.gatgraph(atom_emb,edge_indices,ptr,edge_emb)
-
-        return out,attn_weights_list
+        return self.gatgraph(atom_emb,edge_indices,ptr,edge_emb)

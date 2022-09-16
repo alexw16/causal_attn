@@ -7,14 +7,15 @@ import torch
 import torch.nn as nn
 
 from torch_geometric.loader import DataLoader,NeighborLoader
-from torch_geometric.utils import index_to_mask,to_undirected,sort_edge_index
+from torch_geometric.utils import index_to_mask,to_undirected,sort_edge_index,remove_self_loops
 from torch_geometric.data import Data
+
 
 ROOT_DIR = '/home/sandbox/workspace/sequence-graphs/data/'
 
 NODE_CLASS_DATASETS = ['Cora','CiteSeer','PubMed','cornell',
-                           'texas','wisconsin','squirrel','chameleon']
-DATASETS_SPLITS = ['cornell','texas','wisconsin','squirrel','chameleon']
+                           'texas','wisconsin','squirrel','chameleon','crocodile']
+DATASETS_SPLITS = ['cornell','texas','wisconsin','squirrel','chameleon','crocodile']
 
 def positionalencoding1d(d_model, length):
     """
@@ -200,9 +201,11 @@ def load_ogb_data(dataset):
     
     return X,edge_indices,Y,edge_attr,addl_params
 
-def load_dataloader(dataset_name,batch_size=256,shuffle_train=True,split_no=None):
+def load_dataloader(dataset_name,batch_size=256,shuffle_train=True,split_no=None,sample_neighbors=False):
                 
     torch.manual_seed(1)
+    
+    num_neighbors = 5 if sample_neighbors else -1
     
     if 'ogbn' in dataset_name:
 
@@ -239,7 +242,7 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True,split_no=None
                         val_mask=index_to_mask(split_idx['valid'],data.y.size(0)),
                         test_mask=index_to_mask(split_idx['test'],data.y.size(0)))
                         
-        train_loader = NeighborLoader(data,num_neighbors=[-1], 
+        train_loader = NeighborLoader(data,num_neighbors=[num_neighbors], 
                                       input_nodes=split_idx['train'], 
                                       batch_size=batch_size,shuffle=shuffle_train)
         valid_loader = NeighborLoader(data,num_neighbors=[-1],
@@ -259,19 +262,19 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True,split_no=None
         train_idx = data.train_mask.nonzero(as_tuple=False).view(-1)
         valid_idx = data.val_mask.nonzero(as_tuple=False).view(-1)
         test_idx = data.test_mask.nonzero(as_tuple=False).view(-1)
-
-        train_loader = NeighborLoader(data,num_neighbors=[-1],input_nodes=train_idx, 
+        
+        train_loader = NeighborLoader(data,num_neighbors=[num_neighbors],input_nodes=train_idx, 
                                       batch_size=batch_size,shuffle=shuffle_train)
         valid_loader = NeighborLoader(data,num_neighbors=[-1],input_nodes=valid_idx,
                                       batch_size=batch_size,shuffle=False)
         test_loader = NeighborLoader(data,num_neighbors=[-1],input_nodes=test_idx,
                                      batch_size=batch_size,shuffle=False)
         
-    elif dataset_name in ['cornell','texas','wisconsin','squirrel','chameleon']:
+    elif dataset_name in ['cornell','texas','wisconsin','squirrel','chameleon','crocodile']:
         
         if dataset_name in ['cornell','texas','wisconsin']:
             dataset_dir = os.path.join(ROOT_DIR,'webkb',dataset_name)
-        elif dataset_name in ['squirrel','chameleon']:
+        elif dataset_name in ['squirrel','chameleon','crocodile']:
             dataset_dir = os.path.join(ROOT_DIR,'wikipedia',dataset_name)
         data,_ = torch.load(os.path.join(dataset_dir,'processed','data.pt'))
         data.n_id = torch.arange(data.num_nodes)
@@ -280,11 +283,14 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True,split_no=None
         data.val_mask = data.val_mask[:,split_no]
         data.test_mask = data.test_mask[:,split_no]
         
+        data.edge_index,data.edge_attr = remove_self_loops(data.edge_index,data.edge_attr)
+        
         train_idx = data.train_mask.nonzero(as_tuple=False).view(-1)
         valid_idx = data.val_mask.nonzero(as_tuple=False).view(-1)
         test_idx = data.test_mask.nonzero(as_tuple=False).view(-1)
-
-        train_loader = NeighborLoader(data,num_neighbors=[-1],input_nodes=train_idx, 
+        
+        num_neighbors = 5 if sample_neighbors else -1
+        train_loader = NeighborLoader(data,num_neighbors=[num_neighbors],input_nodes=train_idx, 
                                       batch_size=batch_size,shuffle=shuffle_train)
         valid_loader = NeighborLoader(data,num_neighbors=[-1],input_nodes=valid_idx,
                                       batch_size=batch_size,shuffle=False)
@@ -328,45 +334,47 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True,split_no=None
 #             dataset.data.edge_attr = torch.cat([edge_year_encoding,dataset.data.edge_weight],dim=1)
         
         split_idx = dataset.get_edge_split()
+        data_dict = dataset.data.to_dict()
+        
+        train_data = Data()
+        train_data = train_data.from_dict(data_dict)
+        train_data['edge_index'] = split_idx['train']['edge'].T
 
-        train_dataset = dataset.copy()
-        train_dataset.data.edge_index = split_idx['train']['edge'].T
-
-        valid_dataset = dataset.copy()
+        valid_data = Data() # dataset.copy()
+        valid_data = valid_data.from_dict(data_dict)
         valid_pos_edges = split_idx['valid']['edge']
         valid_neg_edges = split_idx['valid']['edge_neg']
-
-        valid_dataset.data.edge_index = split_idx['train']['edge'].T
-        valid_dataset.data.edge_label_index = torch.cat([valid_pos_edges,
+        valid_data['edge_index'] = split_idx['train']['edge'].T
+        valid_data['edge_label_index'] = torch.cat([valid_pos_edges,
                                                    valid_neg_edges],dim=0).T
-        valid_dataset.data.edge_label = torch.cat([torch.ones(valid_pos_edges.size(0)),
+        valid_data['edge_label'] = torch.cat([torch.ones(valid_pos_edges.size(0)),
                                           torch.zeros(valid_neg_edges.size(0))])
 
-        test_dataset = dataset.copy()
+        test_data = Data() # dataset.copy()
+        test_data = test_data.from_dict(data_dict)
         test_pos_edges = split_idx['test']['edge']
         test_neg_edges = split_idx['test']['edge_neg']
-
-        test_dataset.data.edge_index = split_idx['train']['edge'].T
-        test_dataset.data.edge_label_index = torch.cat([test_pos_edges,
+        test_data['edge_index'] = split_idx['train']['edge'].T
+        test_data['edge_label_index'] = torch.cat([test_pos_edges,
                                                    test_neg_edges],dim=0).T
-        test_dataset.data.edge_label = torch.cat([torch.ones(test_pos_edges.size(0)),
+        test_data['edge_label'] = torch.cat([torch.ones(test_pos_edges.size(0)),
                                           torch.zeros(test_neg_edges.size(0))])
 
-        train_loader = NeighborLoader(train_dataset.data,
-                                      num_neighbors=[-1],
-                                      input_nodes=torch.unique(train_dataset.data.edge_index.flatten()),
+        train_loader = NeighborLoader(train_data,
+                                      num_neighbors=[num_neighbors],
+                                      input_nodes=torch.unique(train_data.edge_index.flatten()),
                                       batch_size=batch_size,
                                       shuffle=shuffle_train)
 
-        valid_loader = NeighborLoader(valid_dataset.data,
+        valid_loader = NeighborLoader(valid_data,
                                       num_neighbors=[-1],
-                                      input_nodes=torch.unique(valid_dataset.data.edge_index.flatten()),
+                                      input_nodes=torch.unique(valid_data.edge_index.flatten()),
                                       batch_size=batch_size,
                                       shuffle=False)
 
-        test_loader = NeighborLoader(test_dataset.data,
+        test_loader = NeighborLoader(test_data,
                                       num_neighbors=[-1],
-                                      input_nodes=torch.unique(test_dataset.data.edge_index.flatten()),
+                                      input_nodes=torch.unique(test_data.edge_index.flatten()),
                                       batch_size=batch_size,
                                       shuffle=False)        
 
@@ -414,7 +422,7 @@ def generate_rewired_dataloader(model,dataloader,attn_thresh=0.1,batch_size=256,
     
     torch.manual_seed(1)
 
-    _,attn_weights_list = model(dataloader.data.x,dataloader.data.edge_index,dataloader.data.edge_attr)
+    _,(_,attn_weights_list) = model(dataloader.data.x,dataloader.data.edge_index,dataloader.data.edge_attr)
     attn_weights = torch.cat(attn_weights_list,dim=1).mean(1)
 
     e_id = torch.nonzero(attn_weights >= attn_thresh).squeeze()
@@ -435,38 +443,3 @@ def generate_rewired_dataloader(model,dataloader,attn_thresh=0.1,batch_size=256,
 
     return NeighborLoader(data,num_neighbors=[-1],batch_size=batch_size,shuffle=shuffle,
                           input_nodes=dataloader.input_nodes)
-
-# def generate_rewired_dataloader(model,dataset_name,attn_thresh=0.1,batch_size=256,shuffle=False,verbose=False):
-    
-#     torch.manual_seed(1)
-    
-#     train_loader,valid_loader,test_loader = load_dataloader(dataset_name,batch_size=batch_size,
-#                                                             shuffle_train=shuffle)
-
-#     _,attn_weights_list = model(train_loader.data.x,train_loader.data.edge_index,train_loader.data.edge_attr)
-#     attn_weights = torch.cat(attn_weights_list,dim=1).mean(1)
-
-#     e_id = torch.nonzero(attn_weights >= attn_thresh).squeeze()
-    
-#     remaining_edge_index = train_loader.data.edge_index[:,e_id]
-#     remaining_edge_attr = None if dataloader.data.edge_attr is None else dataloader.data.edge_attr[e_id]
-    
-#     if verbose:
-#         print('Retaining {} of {} edges'.format(remaining_edge_index.size(1),attn_weights.size(0)))
-        
-#     neighborloader_list = []
-#     for dataloader in [train_loader,valid_loader,test_loader]:
-#         data_dict = dataloader.data.to_dict()
-#         data_dict['edge_index'] = remaining_edge_index
-#         if 'edge_attr' in data_dict:
-#             data_dict['edge_attr'] = remaining_edge_attr
-        
-#         data = Data().from_dict(data_dict)        
-#         neigh_loader = NeighborLoader(data,num_neighbors=[-1],batch_size=batch_size,
-#                                       shuffle=shuffle,input_nodes=dataloader.input_nodes)
-#         neighborloader_list.append(neigh_loader)
-        
-#     rewired_train_loader,rewired_valid_loader,rewired_test_loader = neighborloader_tuple
-        
-#     return rewired_train_loader,rewired_valid_loader,rewired_test_loader
-

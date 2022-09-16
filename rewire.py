@@ -30,6 +30,7 @@ def main():
     parser.add_argument('-es', dest='early_stop',type=int,default=1)
     parser.add_argument('-ni', dest='n_interventions',type=int,default=10)
     parser.add_argument('-at', dest='attn_thresh',type=float,default=0.1)
+    parser.add_argument('-sn', dest='split_no',type=int,default=0)
     parser.add_argument('-nt', dest='n_trials',type=int,default=5)
     parser.add_argument('-ghd', dest='gcn_dim_hidden',type=int,default=200)
 
@@ -44,27 +45,27 @@ def main():
     print('Loading data...')
     
     if 'ogbg-mol' in args.dataset:
-        batch_size=512
-    elif 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
-        batch_size=5000
+        batch_size = 10000 if 'molpcba' in args.dataset else 50000
+    elif 'ogbn' in args.dataset or args.dataset in NODE_CLASS_DATASETS:
+        batch_size = 10000
     elif 'ogbl' in args.dataset:
-        batch_size=10000
+        batch_size = 500000
         
-    train_loader,valid_loader,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+    train_loader,valid_loader,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False,split_no=args.split_no)
     dim_in,dim_out,edge_dim,pred_criterion = get_dataset_params(args.dataset,train_loader,args.dim_hidden)
     
     print('Initializing Models...')
     np.random.seed(1)
     torch.manual_seed(1)
 
-    if 'ogbn' in args.dataset or args.dataset in ['Cora','CiteSeer','PubMed']:
+    if 'ogbn' in args.dataset or args.dataset in NODE_CLASS_DATASETS:
         task = 'npp'
     elif 'ogbg' in args.dataset:
         task = 'gpp'
     elif 'ogbl' in args.dataset:
         task = 'lpp'
         
-    initial_learning_rate=0.001
+    initial_learning_rate=0.01
     beta_1=0.9
     beta_2=0.999
     
@@ -87,7 +88,7 @@ def main():
         if not os.path.exists(os.path.join(rewire_model_dir,model_file_name)):
             
             print('Training baseline GCN model...')
-            train_loader,valid_loader,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+            train_loader,valid_loader,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False,split_no=args.split_no)
             n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
             model_gcn = instantiate_model(args.dataset,'gcnconv',dim_in,args.gcn_dim_hidden,dim_out,
                                           heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,
@@ -111,7 +112,7 @@ def main():
         if not os.path.exists(os.path.join(rewire_model_dir,rewire_model_file_name)):
 
             # rewiring graph
-            train_loader,_,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+            train_loader,valid_loader,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False,split_no=args.split_no)
             n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
             model = instantiate_model(args.dataset,args.model_type,dim_in,args.dim_hidden,dim_out,
                                           heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,
@@ -155,7 +156,7 @@ def main():
         if not os.path.exists(os.path.join(rewire_model_dir,rewire_model_file_name)):
 
             # rewiring graph
-            train_loader,valid_loader,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False)
+            train_loader,valid_loader,_ = load_dataloader(args.dataset,batch_size=batch_size,shuffle_train=False,split_no=args.split_no)
             n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
             model = instantiate_model(args.dataset,args.model_type,dim_in,args.dim_hidden,dim_out,
                                           heads=args.K,n_layers=args.n_layers,edge_dim=edge_dim,
