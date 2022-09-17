@@ -215,10 +215,10 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True,split_no=None
                                           root = os.path.join(ROOT_DIR,'ogb_npp'))
         split_idx = dataset.get_idx_split()
         
-        if 'arxiv' in dataset_name:
-              
-            data = dataset.data
-            data.n_id = torch.arange(data.num_nodes)
+        data = dataset.data
+        data.n_id = torch.arange(data.num_nodes)
+            
+        if 'arxiv2' in dataset_name:
 
             edge_indices = data.edge_index[[1,0]]
 
@@ -241,6 +241,12 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True,split_no=None
                         train_mask=index_to_mask(split_idx['train'],data.y.size(0)),
                         val_mask=index_to_mask(split_idx['valid'],data.y.size(0)),
                         test_mask=index_to_mask(split_idx['test'],data.y.size(0)))
+                        
+        else:
+            data.y = data.y.squeeze()
+            data.train_mask = index_to_mask(split_idx['train'],data.y.size(0))
+            data.val_mask = index_to_mask(split_idx['valid'],data.y.size(0))
+            data.test_mask = index_to_mask(split_idx['test'],data.y.size(0))
                         
         train_loader = NeighborLoader(data,num_neighbors=[num_neighbors], 
                                       input_nodes=split_idx['train'], 
