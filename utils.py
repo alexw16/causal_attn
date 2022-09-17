@@ -406,9 +406,14 @@ def get_dataset_params(dataset_name,dataloader,dim_hidden):
     
     elif 'ogbn' in dataset_name or dataset_name in NODE_CLASS_DATASETS:
         dim_in = dataloader.data.x.shape[1]
-        dim_out = dataloader.data.y.long().data.numpy().max()+1
         edge_dim = dataloader.data.edge_attr.shape[1] if dataloader.data.edge_attr is not None else None
-        pred_criterion = nn.CrossEntropyLoss(reduction='none')
+        
+        if 'proteins' in dataset_name:
+            dim_out = dataloader.data.y.size(1)
+            pred_criterion = nn.BCEWithLogitsLoss(reduction='none')
+        else:
+            dim_out = dataloader.data.y.long().data.numpy().max()+1
+            pred_criterion = nn.CrossEntropyLoss(reduction='none')
     
     elif 'ogbl' in dataset_name:
         dim_in = dim_hidden if dataset_name == 'ogbl-ddi' else dataloader.data.x.shape[1]
