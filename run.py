@@ -69,7 +69,7 @@ def main():
     if 'ogbg-mol' in args.dataset:
         batch_size = 10000 if 'molpcba' in args.dataset else 50000
     elif 'ogbn' in args.dataset or args.dataset in NODE_CLASS_DATASETS:
-        batch_size = 10000
+        batch_size = 10000 if 'protein' not in args.dataset else 2000
     elif 'ogbl' in args.dataset:
         batch_size = 500000
         

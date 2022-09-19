@@ -3,7 +3,7 @@ import time
 
 import torch
 import torch.nn as nn
-from torch_geometric.utils import negative_sampling
+from torch_geometric.utils import mask_to_index,negative_sampling
 from torch_geometric.transforms import RandomLinkSplit
 
 from torch_geometric.loader import NeighborSampler
@@ -324,7 +324,7 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
             if intervention_loss:
                 
                 if task == 'npp':
-                    node_indices = torch.arange(batch_edge_index.max()+1)[batch_mask]
+                    node_indices = torch.arange(batch_mask.size(0))[batch_mask]
                 elif task == 'gpp':
                     node_indices = torch.arange(Y.size(0))
                 elif task == 'lpp':
