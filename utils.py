@@ -11,7 +11,7 @@ from torch_geometric.utils import index_to_mask,to_undirected,sort_edge_index,re
 from torch_geometric.data import Data
 
 
-ROOT_DIR = '/data/cb/alexwu/graph_attn/data/'
+ROOT_DIR = '/home/sandbox/workspace/sequence-graphs/data/'
 
 NODE_CLASS_DATASETS = ['Cora','CiteSeer','PubMed','cornell',
                            'texas','wisconsin','squirrel','chameleon','crocodile']
@@ -205,9 +205,9 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True,split_no=None
                 
     torch.manual_seed(1)
     
-    num_neighbors = 10 if sample_neighbors else -1
+    num_neighbors = 5 if sample_neighbors else -1
     
-    if 'ogbn' in dataset_name and 'proteins' not in dataset_name:
+    if 'ogbn' in dataset_name:
 
         from ogb.nodeproppred import PygNodePropPredDataset
 
@@ -215,11 +215,10 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True,split_no=None
                                           root = os.path.join(ROOT_DIR,'ogb_npp'))
         split_idx = dataset.get_idx_split()
         
-        data = dataset.data
-        data.n_id = torch.arange(data.num_nodes)
-        directed = True
-        
-        if 'arxiv2' in dataset_name:
+        if 'arxiv' in dataset_name:
+              
+            data = dataset.data
+            data.n_id = torch.arange(data.num_nodes)
 
             edge_indices = data.edge_index[[1,0]]
 
@@ -242,56 +241,17 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True,split_no=None
                         train_mask=index_to_mask(split_idx['train'],data.y.size(0)),
                         val_mask=index_to_mask(split_idx['valid'],data.y.size(0)),
                         test_mask=index_to_mask(split_idx['test'],data.y.size(0)))
-
-        else:
-            data.y = data.y.squeeze()
-            data.train_mask = index_to_mask(split_idx['train'],data.y.size(0))
-            data.val_mask = index_to_mask(split_idx['valid'],data.y.size(0))
-            data.test_mask = index_to_mask(split_idx['test'],data.y.size(0))
-                     
+                        
         train_loader = NeighborLoader(data,num_neighbors=[num_neighbors], 
                                       input_nodes=split_idx['train'], 
-                                      batch_size=batch_size,shuffle=shuffle_train,directed=directed)
+                                      batch_size=batch_size,shuffle=shuffle_train)
         valid_loader = NeighborLoader(data,num_neighbors=[-1],
                                       input_nodes=split_idx['valid'],
-                                      batch_size=batch_size,shuffle=False,directed=directed)
+                                      batch_size=batch_size,shuffle=False)
         test_loader = NeighborLoader(data,num_neighbors=[-1],
-                                      input_nodes=split_idx['test'],
-                                      batch_size=batch_size,shuffle=False,directed=directed)
-
-    elif dataset_name == 'ogbn-proteins':
-        "https://github.com/pyg-team/pytorch_geometric/examples/ogbn_proteins_deepgcn.py"
-
-        from ogb.nodeproppred import PygNodePropPredDataset
-        from torch_geometric.loader import RandomNodeSampler
-        from torch_scatter import scatter
-
-        dataset = PygNodePropPredDataset(name = dataset_name, 
-                                          root = os.path.join(ROOT_DIR,'ogb_npp'))
-
-        splitted_idx = dataset.get_idx_split()
-        data = dataset[0]
-        data.node_species = None
-        data.y = data.y.to(torch.float)
-
-        # Initialize features of nodes by aggregating edge features.
-        row, col = data.edge_index
-        data.x = scatter(data.edge_attr, col, 0, dim_size=data.num_nodes, reduce='add')
-
-        # Set split indices to masks.
-        for split in ['train', 'valid', 'test']:
-            mask = torch.zeros(data.num_nodes, dtype=torch.bool)
-            mask[splitted_idx[split]] = True
-            if split == 'valid':
-                data['val_mask'] = mask
-            else:
-                data[f'{split}_mask'] = mask
-
-        train_loader = RandomNodeSampler(data, num_parts=40, shuffle=True,
-                                 num_workers=5)
-        valid_loader = RandomNodeSampler(data, num_parts=5, num_workers=5)
-        test_loader = RandomNodeSampler(data, num_parts=5, num_workers=5)
-
+                                     input_nodes=split_idx['test'],
+                                     batch_size=batch_size,shuffle=False)
+        
     elif dataset_name in ['Cora','CiteSeer','PubMed']:
         
         dataset_dir = os.path.join(ROOT_DIR,'planetoid',dataset_name)
@@ -446,14 +406,9 @@ def get_dataset_params(dataset_name,dataloader,dim_hidden):
     
     elif 'ogbn' in dataset_name or dataset_name in NODE_CLASS_DATASETS:
         dim_in = dataloader.data.x.shape[1]
+        dim_out = dataloader.data.y.long().data.numpy().max()+1
         edge_dim = dataloader.data.edge_attr.shape[1] if dataloader.data.edge_attr is not None else None
-        
-        if 'proteins' in dataset_name:
-            dim_out = dataloader.data.y.size(1)
-            pred_criterion = nn.BCEWithLogitsLoss(reduction='none')
-        else:
-            dim_out = dataloader.data.y.long().data.numpy().max()+1
-            pred_criterion = nn.CrossEntropyLoss(reduction='none')
+        pred_criterion = nn.CrossEntropyLoss(reduction='none')
     
     elif 'ogbl' in dataset_name:
         dim_in = dim_hidden if dataset_name == 'ogbl-ddi' else dataloader.data.x.shape[1]
