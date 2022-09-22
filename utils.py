@@ -9,6 +9,7 @@ import torch.nn as nn
 from torch_geometric.loader import DataLoader,NeighborLoader
 from torch_geometric.utils import index_to_mask,to_undirected,sort_edge_index,remove_self_loops
 from torch_geometric.data import Data
+from torch_geometric.utils import degree
 
 
 ROOT_DIR = '/home/sandbox/workspace/sequence-graphs/data/'
@@ -408,7 +409,9 @@ def get_dataset_params(dataset_name,dataloader,dim_hidden):
         dim_in = dataloader.data.x.shape[1]
         dim_out = dataloader.data.y.long().data.numpy().max()+1
         edge_dim = dataloader.data.edge_attr.shape[1] if dataloader.data.edge_attr is not None else None
-        pred_criterion = nn.CrossEntropyLoss(reduction='none')
+        data = dataloader.data
+        w = degree(data.y[data.train_mask])
+        pred_criterion = nn.CrossEntropyLoss(reduction='none',weight=w.max()/w)
     
     elif 'ogbl' in dataset_name:
         dim_in = dim_hidden if dataset_name == 'ogbl-ddi' else dataloader.data.x.shape[1]

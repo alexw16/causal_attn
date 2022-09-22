@@ -12,8 +12,6 @@ from utils import *
 from causal import *
 
 
-
-
 # def run_epoch_batch(epoch_no,model,X,edge_indices,Y,model_type='causal',
 #                     optimizer=None,node_indices=None,edge_attr=None,device=0,
 #                     batch_size=15000,verbose=True,train=True,
@@ -319,6 +317,8 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
             causal_interv_loss = torch.zeros(1)
             loss_ratio = 'ratio' in model_type
             loss_ratio = 'thresh' if 'thresh' in model_type else loss_ratio
+            loss_ratio = 'deg_wt' if 'deg_wt' in model_type else loss_ratio
+
             use_labelprop = 'labelprop' in model_type
             
             if intervention_loss:
@@ -331,6 +331,7 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                     node_indices = torch.arange(batch_edge_index.max()+1)
                     
                 shuffle_effect = 'shuffle' in model_type
+                shuffle_effect = 'unif' if 'unif' in model_type else shuffle_effect
                 
                 pred_criterion.weight = None
                 causal_interv_loss = compute_intervention_loss(

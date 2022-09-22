@@ -7,8 +7,22 @@ import torch.nn as nn
 from torch_geometric.loader import NeighborSampler
 from torch_sparse import SparseTensor
 from torch_geometric.nn.models import LabelPropagation
+from torch_geometric.utils import degree
+from torch.nn.functional import one_hot
+from torch_geometric.nn import MessagePassing
 
 from utils import *
+
+class NeighborVote(MessagePassing):
+    def __init__(self):
+        super().__init__(aggr='add')
+
+    def forward(self,y,edge_index,mask):
+
+        ohe_y = one_hot(y,num_classes=y.max()+1)
+        ohe_y[~mask] = 0
+
+        return self.propagate(edge_index,x=ohe_y).float()
 
 def get_pruned_e_id(edge_indices,pruned_edge_indices):
     
@@ -98,7 +112,13 @@ def compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
         
     if loss_ratio:
         effect_ratio = interv_pred_loss/(1e-10 + pred_loss)
+        if 'deg_wt' in str(loss_ratio):
+            w = degree(remaining_edge_indices[1],
+                       num_nodes=remaining_edge_indices.max()) + 1
+            effect_ratio = effect_ratio**(w[node_indices])
+
         causal_effect = 1/(1+torch.exp(-10*(effect_ratio-1)))
+        
         if 'thresh' in str(loss_ratio):
             causal_effect[effect_ratio <= 1] = 0
     else:
@@ -117,7 +137,7 @@ def compute_causal_effect_labelprop(batch,remaining_edge_indices,
                                     task='npp',ptr=None,edge_indices_pred=None,
                                     loss_ratio=False):
 
-    labelprop = LabelPropagation(1,alpha=0.1)
+    labelprop = NeighborVote() # 1,alpha=0.1)
     
     if task == 'npp':
         
@@ -130,10 +150,15 @@ def compute_causal_effect_labelprop(batch,remaining_edge_indices,
         
     if loss_ratio:
         effect_ratio = interv_pred_loss/(1e-10 + pred_loss)
+        if 'deg_wt' in str(loss_ratio):
+            w = degree(remaining_edge_indices[1],
+                       num_nodes=remaining_edge_indices.max()) + 1
+            effect_ratio = effect_ratio**(w[node_indices])
+
         causal_effect = 1/(1+torch.exp(-10*(effect_ratio-1)))
-    else:
-        causal_effect = interv_pred_loss - pred_loss
-        causal_effect = 1/(1+torch.exp(-1*(causal_effect-1)))
+        
+        if 'thresh' in str(loss_ratio):
+            causal_effect[effect_ratio <= 1] = 0
     
     causal_effect = causal_effect.detach()
     
@@ -212,11 +237,13 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
                                                   loss_ratio=loss_ratio)
             
         causal_effect = torch.nan_to_num(causal_effect,nan=1e-10)
-
+        # print(causal_effect.min(),causal_effect.max(),causal_effect.mean(),causal_effect.median())
         if shuffle_effect:
-            # causal_effect = causal_effect[torch.randperm(causal_effect.size(0))]
-            causal_effect = torch.rand(causal_effect.size(0)).to(causal_effect.device)
-
+            if 'unif' in str(shuffle_effect):
+                causal_effect = torch.rand(causal_effect.size(0)).to(causal_effect.device)
+            else:
+                causal_effect = causal_effect[torch.randperm(causal_effect.size(0))]
+            
         # weight loss function
         if weight_by_degree:
             from collections import Counter
