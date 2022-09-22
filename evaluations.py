@@ -560,6 +560,14 @@ def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_
     if plot:
         
         plt.figure(figsize=(4,4))
+        
+        min_value = plot_df[['x','y']].values.min()
+        max_value = plot_df[['x','y']].values.max()
+        min_value = min_value - 0.05*(max_value-min_value)
+        max_value = max_value + 0.05*(max_value-min_value)
+        
+        plt.plot([min_value,max_value],[min_value,max_value],linestyle='--',linewidth=2,color='grey')
+        
         for model,model_df in plot_df.groupby('model'):
 
             alpha_scale = np.log(1+model_df[alpha_feat]/model_df[alpha_feat].min())
@@ -567,16 +575,10 @@ def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_
                       c=model_color[model],label=model,edgecolors='black',
                       s=150*(1+model_df[alpha_feat])/(1+model_df[alpha_feat]).max())
                       #alpha=(1+model_df[alpha_feat])/(1+model_df[alpha_feat]).max(),
-
-        min_value = plot_df[['x','y']].values.min()
-        max_value = plot_df[['x','y']].values.max()
-        min_value = min_value - 0.05*(max_value-min_value)
-        max_value = max_value + 0.05*(max_value-min_value)
         
         plt.xlim([min_value,max_value])
         plt.ylim([min_value,max_value])
 
-        plt.plot([min_value,max_value],[min_value,max_value],linestyle='--',linewidth=1,color='grey')
         leg = plt.legend(fontsize=16,bbox_to_anchor=(1,1),frameon=False)
 
         for lh in leg.legendHandles: 
@@ -585,12 +587,16 @@ def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_
 
         ticks = (np.linspace(min_value,max_value,20)*20).astype(int)/20
         ticks = sorted(list(set(ticks)))
-        plt.xticks(fontsize=12)
-        plt.yticks(fontsize=12)
-        plt.xlabel('Baseline\n{}'.format(eval_metric.upper()),fontsize=18)
-        plt.ylabel('Causal Attention\n{}'.format(eval_metric.upper()),fontsize=18)
-
-        plt.title(eval_set.upper(),fontsize=18)
+        plt.xticks(fontsize=20)
+        plt.yticks(fontsize=20)
+        
+        plt.locator_params(axis='x',nbins=5)
+        plt.locator_params(axis='y',nbins=5)
+        
+        # plt.xlabel('Baseline\n{}'.format(eval_metric.upper()),fontsize=28)
+        # plt.ylabel('Causal Attention\n{}'.format(eval_metric.upper()),fontsize=28)
+        plt.xlabel(eval_metric.upper(),fontsize=24)
+        plt.ylabel(eval_metric.upper(),fontsize=24)
 
         sns.despine()
 
