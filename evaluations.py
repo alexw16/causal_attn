@@ -14,6 +14,7 @@ from torch_geometric.utils import degree
 
 from collections import Counter
 from sklearn.metrics import dcg_score
+from scipy.special import kl_div
 
 def evaluate_single_model(model_type,evaluator,model,dataloader,device=0,task='gpp',mask_attr=None):
     
@@ -141,6 +142,40 @@ def label_agreement(model,dataloader,task,device=0,weight_by_degree=False):
     torch.cuda.empty_cache() 
     
     return average_precision_score(y_true,y_pred),roc_auc_score(y_true,y_pred),y_true.mean()
+
+def label_agreement_kl(model,dataloader,task,device=0,weight_by_degree=False):
+    
+    model = model.to(device)
+    
+    y_true = []
+    y_pred = []
+    kl_list = []
+    for batch in dataloader:
+        batch = batch.to(device)
+        if task == 'gpp':
+            batch_pred,(batch_edge_index,batch_attn_weights_list) = model(batch.x,batch.edge_index,batch.ptr,batch.edge_attr)
+        else:
+            batch_pred,(batch_edge_index,batch_attn_weights_list) = model(batch.x,batch.edge_index,batch.edge_attr)
+
+        attn_weights = torch.cat(batch_attn_weights_list,1).mean(1)
+        label1,label2 = batch.y[batch.edge_index]
+        
+        agree = (label1 == label2).float().cpu().data.numpy()
+        
+        
+        edge_index = batch_edge_index.cpu().data.numpy()
+        for target_idx in list(set(edge_index[1])):
+            attn_weights_neigh = attn_weights[edge_index[1] == target_idx]
+            agree_neigh = attn_weights[edge_index[1] == target_idx]
+            agree_neigh *= 1./agree_neigh.sum()
+            
+            kl_list.append(kl_div(attn_weights,agree))
+
+    torch.cuda.empty_cache() 
+    
+    return np.mean(kl_list)
+
+
 
 def attn_freq_dcg(model,dataloader,task,device=0,weight_by_degree=False):
     
@@ -369,6 +404,39 @@ def evaluate_label_agreement(dataset_name,dataloader,save_dir,params_dict,
     
     return results_df
 
+def evaluate_label_agreement_kl(dataset_name,dataloader,save_dir,params_dict,
+                    device=0,suffix='interv',task='npp',mask_attr='test_mask',
+                    weight_by_degree=False):
+    
+    data_dict = {k: [] for k in ['model','base','n_layers','dim_hidden',
+                               'heads','lc','ni','set','kl']}
+    
+    for model_base in params_dict['model']:
+        model_type = '{}.{}'.format(model_base,suffix)
+        for dim_hidden in params_dict['hd']:
+            for n_layers in params_dict['nl']:
+                for heads in params_dict['heads']:
+                    dim_in,dim_out,edge_dim,_ = get_dataset_params(dataset_name,dataloader,dim_hidden)
+                    n_embeddings = dataloader.data.num_nodes if dataset_name == 'ogbl-ddi' else None
+
+                    model = load_model(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,
+                                         n_layers,edge_dim,save_dir,base=True,lc=None,ni=None,n_embeddings=n_embeddings)
+                    mean_kl = label_agreement_kl(model,dataloader,task=task,device=device,weight_by_degree=weight_by_degree)
+                    add_results_to_dict(data_dict,model_type,True,n_layers,heads,dim_hidden,0,0,'test','kl',mean_kl)
+
+                    for lc in params_dict['lc']:
+                        for ni in params_dict['ni']:
+                            model = load_model(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,
+                                                 n_layers,edge_dim,save_dir,base=False,lc=lc,ni=ni,n_embeddings=n_embeddings)
+                            mean_kl = label_agreement_kl(model,dataloader,task=task,device=device,weight_by_degree=weight_by_degree)
+                            add_results_to_dict(data_dict,model_type,False,n_layers,heads,dim_hidden,lc,ni,'test','kl',mean_kl)
+                            
+    results_df = pd.DataFrame(data_dict)
+    results_df['params'] = ['nl{}.hd{}.{}heads.lc{}.ni{}'.format(int(n_layers),int(dim_hidden),int(heads),lc,int(ni)) 
+                        for n_layers,dim_hidden,heads,lc,ni in results_df[['n_layers','dim_hidden','heads','lc','ni']].values]
+    
+    return results_df
+
 def evaluate_attn_freq_dcg(dataset_name,dataloader,save_dir,params_dict,
                     device=0,suffix='interv',task='npp',mask_attr='test_mask',
                     weight_by_degree=False):
@@ -531,7 +599,7 @@ from matplotlib.ticker import FormatStrFormatter
 
 model_color = {'gat': 'green', 'gatv2': 'blue', 'transformer': 'red'}
 
-def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_path=None,plot=True):
+def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_path=None,plot=True,rotation=0):
     
     plot_dict = {k: [] for k in ['x','y','model','params']}
     results_df = results_df[results_df['set'] == eval_set]
@@ -567,13 +635,13 @@ def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_
         max_value = max_value + 0.05*(max_value-min_value)
         
         plt.plot([min_value,max_value],[min_value,max_value],linestyle='--',linewidth=2,color='grey')
-        
-        if alpha_feat is None:
-            s = 150
-        else:
-            s = 150*(1+model_df[alpha_feat])/(1+model_df[alpha_feat]).max()
             
         for model,model_df in plot_df.groupby('model'):
+            if alpha_feat is None:
+                s = 150
+            else:
+                s = 150*(1+model_df[alpha_feat])/(1+model_df[alpha_feat]).max()
+
             plt.scatter(model_df['x'],model_df['y'], 
                       c=model_color[model],label=model,edgecolors='black',
                       s=s)
@@ -588,7 +656,7 @@ def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_
 
         ticks = (np.linspace(min_value,max_value,20)*20).astype(int)/20
         ticks = sorted(list(set(ticks)))
-        plt.xticks(fontsize=20)
+        plt.xticks(fontsize=20,rotation=rotation)
         plt.yticks(fontsize=20)
         
         plt.locator_params(axis='x',nbins=5)
