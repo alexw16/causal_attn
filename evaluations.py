@@ -568,22 +568,23 @@ def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_
         
         plt.plot([min_value,max_value],[min_value,max_value],linestyle='--',linewidth=2,color='grey')
         
+        if alpha_feat is None:
+            s = 150
+        else:
+            s = 150*(1+model_df[alpha_feat])/(1+model_df[alpha_feat]).max()
+            
         for model,model_df in plot_df.groupby('model'):
-
-            alpha_scale = np.log(1+model_df[alpha_feat]/model_df[alpha_feat].min())
             plt.scatter(model_df['x'],model_df['y'], 
                       c=model_color[model],label=model,edgecolors='black',
-                      s=150*(1+model_df[alpha_feat])/(1+model_df[alpha_feat]).max())
-                      #alpha=(1+model_df[alpha_feat])/(1+model_df[alpha_feat]).max(),
+                      s=s)
         
         plt.xlim([min_value,max_value])
         plt.ylim([min_value,max_value])
 
-        leg = plt.legend(fontsize=16,bbox_to_anchor=(1,1),frameon=False)
-
-        for lh in leg.legendHandles: 
-            lh.set_alpha(1)
-            lh._sizes = [100] 
+#         leg = plt.legend(fontsize=16,bbox_to_anchor=(1,1),frameon=False)
+#         for lh in leg.legendHandles: 
+#             lh.set_alpha(1)
+#             lh._sizes = [100] 
 
         ticks = (np.linspace(min_value,max_value,20)*20).astype(int)/20
         ticks = sorted(list(set(ticks)))
