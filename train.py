@@ -333,7 +333,8 @@ def run_epoch_dataloader(epoch_no,model,dataloader,model_type='causal',
                 shuffle_effect = 'shuffle' in model_type
                 shuffle_effect = 'unif' if 'unif' in model_type else shuffle_effect
                 
-                # pred_criterion.weight = None
+                if task == 'gpp':
+                    pred_criterion.weight = None # for weighting by % positives
                 causal_interv_loss = compute_intervention_loss(
                                         model,X,node_indices,
                                         batch_edge_index,Y,preds,attn_weights,
