@@ -749,10 +749,14 @@ def plot_attention(all_results,eval_set,eval_metric,save_path=None,base_results_
 
     plt.title(eval_set.upper(),fontsize=20)
 
-    plt.xlabel('Attention Threshold',fontsize=18)
-    plt.ylabel(eval_metric.upper(),fontsize=18)
-    plt.xticks(fontsize=16)
-    plt.yticks(fontsize=16)
+    plt.xlabel('Attention Threshold',fontsize=24)
+    plt.ylabel(eval_metric.upper(),fontsize=24)
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
+    
+    plt.locator_params(axis='x',nbins=5)
+    plt.locator_params(axis='y',nbins=5)
+        
     sns.despine()
 
     if save_path is not None:
