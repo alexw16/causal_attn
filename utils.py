@@ -441,7 +441,7 @@ def generate_rewired_dataloader(model,dataloader,attn_thresh=0.1,batch_size=256,
     
     if weight_by_degree:
         deg = degree(dataloader.data.edge_index[1])
-        attn_weights *= deg
+        attn_weights *= deg[dataloader.data.edge_index[1]]
 
     e_id = torch.nonzero(attn_weights >= attn_thresh).squeeze()
     

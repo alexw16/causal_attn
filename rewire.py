@@ -33,6 +33,7 @@ def main():
     parser.add_argument('-sn', dest='split_no',type=int,default=0)
     parser.add_argument('-nt', dest='n_trials',type=int,default=5)
     parser.add_argument('-ghd', dest='gcn_dim_hidden',type=int,default=200)
+    parser.add_argument('-wt', dest='weight_attention',type=int,default=1)
 
     args = parser.parse_args()
     
@@ -121,10 +122,12 @@ def main():
 
             rewired_train_loader = generate_rewired_dataloader(model,train_loader,args.attn_thresh,
                                                                batch_size=batch_size,
-                                                               shuffle=True,verbose=True)
+                                                               shuffle=True,verbose=True,
+                                                               weight_by_degree=args.weight_attention)
             rewired_valid_loader = generate_rewired_dataloader(model,valid_loader,args.attn_thresh,
                                                                batch_size=batch_size,
-                                                               shuffle=True,verbose=True)
+                                                               shuffle=True,verbose=True,
+                                                               weight_by_degree=args.weight_attention)
 
             print('Training GCN model: rewired graph (baseline attention)...')
             n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None
@@ -165,10 +168,12 @@ def main():
 
             rewired_train_loader = generate_rewired_dataloader(model,train_loader,args.attn_thresh,
                                                                batch_size=batch_size,
-                                                               shuffle=True,verbose=True)
+                                                               shuffle=True,verbose=True,
+                                                               weight_by_degree=args.weight_attention)
             rewired_valid_loader = generate_rewired_dataloader(model,valid_loader,args.attn_thresh,
                                                                batch_size=batch_size,
-                                                               shuffle=True,verbose=True)
+                                                               shuffle=True,verbose=True,
+                                                               weight_by_degree=args.weight_attention)
             
             print('Training GCN model: rewired graph (causal attention)...')
             n_embeddings = train_loader.data.num_nodes if args.dataset == 'ogbl-ddi' else None

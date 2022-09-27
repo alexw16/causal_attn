@@ -166,10 +166,14 @@ def label_agreement_kl(model,dataloader,task,device=0,weight_by_degree=False):
         edge_index = batch_edge_index.cpu().data.numpy()
         for target_idx in list(set(edge_index[1])):
             attn_weights_neigh = attn_weights[edge_index[1] == target_idx]
+            
             agree_neigh = attn_weights[edge_index[1] == target_idx]
             agree_neigh *= 1./agree_neigh.sum()
             
-            kl_list.append(kl_div(attn_weights,agree))
+            attn_weights_neigh = attn_weights_neigh.cpu().data.numpy()
+            agree_neigh = agree_neigh.cpu().data.numpy()
+            
+            kl_list.extend(kl_div(attn_weights_neigh,agree_neigh))
 
     torch.cuda.empty_cache() 
     
@@ -514,7 +518,7 @@ def evaluate_models_gcn_base(dataset_name,evaluator,save_dir,params_dict,
 
 def evaluate_models_gcn(dataset_name,evaluator,save_dir,params_dict,
                     eval_metric='acc',device=0,suffix='interv',task='npp',batch_size=5000,attn_thresh=0.1,trial_no=0,
-                    gcn_dim_hidden=20,split_no=0):
+                    gcn_dim_hidden=20,split_no=0,weight_by_degree=False):
     
     orig_save_dir = os.path.join(save_dir,'models')
     rewire_save_dir = os.path.join(save_dir,'models_rewire')
@@ -537,11 +541,14 @@ def evaluate_models_gcn(dataset_name,evaluator,save_dir,params_dict,
                     model = load_model(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,
                                      n_layers,edge_dim,orig_save_dir,base=True,lc=None,ni=None,n_embeddings=n_embeddings)
                     rewired_train_loader = generate_rewired_dataloader(model,train_loader,attn_thresh=attn_thresh,
-                                                                     batch_size=batch_size,shuffle=False,verbose=False)
+                                                                     batch_size=batch_size,shuffle=False,verbose=False,
+                                                                     weight_by_degree=weight_by_degree)
                     rewired_valid_loader = generate_rewired_dataloader(model,valid_loader,attn_thresh=attn_thresh,
-                                                                     batch_size=batch_size,shuffle=False,verbose=False)
+                                                                       batch_size=batch_size,shuffle=False,verbose=False,
+                                                                       weight_by_degree=weight_by_degree)
                     rewired_test_loader = generate_rewired_dataloader(model,test_loader,attn_thresh=attn_thresh,
-                                                                    batch_size=batch_size,shuffle=False,verbose=False)
+                                                                      batch_size=batch_size,shuffle=False,verbose=False,
+                                                                      weight_by_degree=weight_by_degree)
 
                     model_gcn = load_model_gcn(dataset_name,model_type + '.trial{}'.format(trial_no),heads,dim_in,dim_hidden,dim_out,
                                          n_layers,edge_dim,rewire_save_dir,base_gcn=False,base=True,
@@ -568,11 +575,14 @@ def evaluate_models_gcn(dataset_name,evaluator,save_dir,params_dict,
                             model = load_model(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,
                                              n_layers,edge_dim,orig_save_dir,base=False,lc=lc,ni=ni,n_embeddings=n_embeddings)
                             rewired_train_loader = generate_rewired_dataloader(model,train_loader,attn_thresh=attn_thresh,
-                                                                             batch_size=batch_size,shuffle=False,verbose=False)
+                                                                               batch_size=batch_size,shuffle=False,verbose=False,
+                                                                               weight_by_degree=weight_by_degree)
                             rewired_valid_loader = generate_rewired_dataloader(model,valid_loader,attn_thresh=attn_thresh,
-                                                                             batch_size=batch_size,shuffle=False,verbose=False)
+                                                                               batch_size=batch_size,shuffle=False,verbose=False,
+                                                                               weight_by_degree=weight_by_degree)
                             rewired_test_loader = generate_rewired_dataloader(model,test_loader,attn_thresh=attn_thresh,
-                                                                            batch_size=batch_size,shuffle=False,verbose=False)
+                                                                              batch_size=batch_size,shuffle=False,verbose=False,
+                                                                              weight_by_degree=weight_by_degree)
 
                             model_gcn = load_model_gcn(dataset_name,model_type + '.trial{}'.format(trial_no),heads,dim_in,dim_hidden,dim_out,
                                                  n_layers,edge_dim,rewire_save_dir,base=False,lc=lc,ni=ni,n_embeddings=n_embeddings,
