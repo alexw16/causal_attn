@@ -609,7 +609,7 @@ from matplotlib.ticker import FormatStrFormatter
 
 model_color = {'gat': 'green', 'gatv2': 'blue', 'transformer': 'red'}
 
-def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_path=None,plot=True,rotation=0):
+def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_path=None,plot=True,rotation=0,nbins=5):
     
     plot_dict = {k: [] for k in ['x','y','model','params']}
     results_df = results_df[results_df['set'] == eval_set]
@@ -669,8 +669,8 @@ def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_
         plt.xticks(fontsize=20,rotation=rotation)
         plt.yticks(fontsize=20)
         
-        plt.locator_params(axis='x',nbins=5)
-        plt.locator_params(axis='y',nbins=5)
+        plt.locator_params(axis='x',nbins=nbins)
+        plt.locator_params(axis='y',nbins=nbins)
         
         # plt.xlabel('Baseline\n{}'.format(eval_metric.upper()),fontsize=28)
         # plt.ylabel('Causal Attention\n{}'.format(eval_metric.upper()),fontsize=28)
@@ -718,12 +718,12 @@ def plot_rand_comparison(plot_df_orig,plot_df_rand,eval_metric,alpha_feat='lc',s
     
 model_color = {'gat': 'green', 'gatv2': 'blue', 'transformer': 'red'}
 
-def plot_attention(all_results,eval_set,eval_metric,save_path=None,base_results_df=None):
+def plot_attention(all_results,eval_set,eval_metric,save_path=None): #,base_results_df=None):
     
     eval_df = all_results[all_results['set'] == eval_set]
     
-    base_metric = base_results_df.loc[eval_set][eval_metric]
-    
+    base_metric = eval_df[eval_df['attn'] == 0][eval_metric].mean()
+                          
     plt.figure(figsize=(4,5))
     for model,model_df in eval_df.groupby('model'):
 
@@ -741,9 +741,8 @@ def plot_attention(all_results,eval_set,eval_metric,save_path=None,base_results_
         print('{} (base) AUC:'.format(model),integrate(model_df[model_df['base']]['attn'].values,
                                                        model_df[model_df['base']][eval_metric].values-base_metric))
         
-    if base_results_df is not None:
-        plt.axhline(y=base_metric,
-                    color='black',linestyle='--',linewidth=2,label='GCN without rewiring')
+    # if base_results_df is not None:
+    plt.axhline(y=base_metric,color='black',linestyle='--',linewidth=2,label='GCN without rewiring')
         
     plt.legend(fontsize=16,bbox_to_anchor=(1,1),frameon=False)
 
