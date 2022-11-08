@@ -12,7 +12,7 @@ from torch_geometric.data import Data
 from torch_geometric.utils import degree
 
 
-ROOT_DIR = '/home/sandbox/workspace/sequence-graphs/data/'
+ROOT_DIR = '/scratch1/alexwu/graph_attn/data/'
 
 NODE_CLASS_DATASETS = ['Cora','CiteSeer','PubMed','cornell',
                            'texas','wisconsin','squirrel','chameleon','crocodile']
@@ -220,33 +220,33 @@ def load_dataloader(dataset_name,batch_size=256,shuffle_train=True,split_no=None
               
             data = dataset.data
             data.n_id = torch.arange(data.num_nodes)
-            data.edge_index = data.edge_index[[1,0]]
-            data.y = data.y.squeeze()
-            data.train_mask = index_to_mask(split_idx['train'],data.y.size(0))
-            data.val_mask = index_to_mask(split_idx['valid'],data.y.size(0))
-            data.test_mask = index_to_mask(split_idx['test'],data.y.size(0))
+            # data.edge_index = data.edge_index[[1,0]]
+            # data.y = data.y.squeeze()
+            # data.train_mask = index_to_mask(split_idx['train'],data.y.size(0))
+            # data.val_mask = index_to_mask(split_idx['valid'],data.y.size(0))
+            # data.test_mask = index_to_mask(split_idx['test'],data.y.size(0))
             
-#             edge_indices = data.edge_index[[1,0]]
+            edge_indices = data.edge_index[[1,0]]
 
-#             # ensure edges point in direction of increasing time
-#             delta_year = data.node_year[edge_indices[0]]-data.node_year[edge_indices[1]]
-#             rev_idx = delta_year.squeeze() < 0
-#             edge_indices[:,rev_idx] = edge_indices[[1,0]][:,rev_idx]
+            # ensure edges point in direction of increasing time
+            delta_year = data.node_year[edge_indices[0]]-data.node_year[edge_indices[1]]
+            rev_idx = delta_year.squeeze() < 0
+            edge_indices[:,rev_idx] = edge_indices[[1,0]][:,rev_idx]
 
-#             # positional encoding of paper years
-#             max_node_year = data.node_year.data.numpy().max()
-#             min_node_year = data.node_year.data.numpy().min()
+            # positional encoding of paper years
+            max_node_year = data.node_year.data.numpy().max()
+            min_node_year = data.node_year.data.numpy().min()
         
-#             pos_encoding = positionalencoding1d(16,max_node_year-min_node_year+1)
-#             year_src_enc = max_node_year-data.node_year[edge_indices[0]].squeeze()
-#             year_target_enc = max_node_year-data.node_year[edge_indices[1]].squeeze()
-#             edge_attr = pos_encoding[year_src_enc]-pos_encoding[year_target_enc]
+            pos_encoding = positionalencoding1d(16,max_node_year-min_node_year+1)
+            year_src_enc = max_node_year-data.node_year[edge_indices[0]].squeeze()
+            year_target_enc = max_node_year-data.node_year[edge_indices[1]].squeeze()
+            edge_attr = pos_encoding[year_src_enc]-pos_encoding[year_target_enc]
             
-#             data = Data(x=data.x,edge_index=edge_indices,edge_attr=edge_attr,
-#                         y=data.y.squeeze(),n_id=torch.arange(data.num_nodes),
-#                         train_mask=index_to_mask(split_idx['train'],data.y.size(0)),
-#                         val_mask=index_to_mask(split_idx['valid'],data.y.size(0)),
-#                         test_mask=index_to_mask(split_idx['test'],data.y.size(0)))
+            data = Data(x=data.x,edge_index=edge_indices,edge_attr=edge_attr,
+                        y=data.y.squeeze(),n_id=torch.arange(data.num_nodes),
+                        train_mask=index_to_mask(split_idx['train'],data.y.size(0)),
+                        val_mask=index_to_mask(split_idx['valid'],data.y.size(0)),
+                        test_mask=index_to_mask(split_idx['test'],data.y.size(0)))
                         
         train_loader = NeighborLoader(data,num_neighbors=[num_neighbors], 
                                       input_nodes=split_idx['train'], 
@@ -415,8 +415,13 @@ def get_dataset_params(dataset_name,dataloader,dim_hidden):
         dim_out = dataloader.data.y.long().data.numpy().max()+1
         edge_dim = dataloader.data.edge_attr.shape[1] if dataloader.data.edge_attr is not None else None
         data = dataloader.data
-        w = degree(data.y[data.train_mask])
-        pred_criterion = nn.CrossEntropyLoss(reduction='none',weight=w.max()/w)
+        
+        if dataset_name in ['cornell','wisconsin','texas']:
+            w = degree(data.y[data.train_mask])
+            w_nonzero_min = w[w>0].min()
+            pred_criterion = nn.CrossEntropyLoss(reduction='none',weight=w.max()/torch.clip(w,w_nonzero_min,1e-10)) 
+        else:
+            pred_criterion = nn.CrossEntropyLoss(reduction='none')
     
     elif 'ogbl' in dataset_name:
         dim_in = dim_hidden if dataset_name == 'ogbl-ddi' else dataloader.data.x.shape[1]
@@ -426,12 +431,17 @@ def get_dataset_params(dataset_name,dataloader,dim_hidden):
         
     return dim_in,dim_out,edge_dim,pred_criterion
 
-def generate_rewired_dataloader(model,dataloader,attn_thresh=0.1,batch_size=256,shuffle=False,verbose=False):
+def generate_rewired_dataloader(model,dataloader,attn_thresh=0.1,batch_size=256,shuffle=False,verbose=False,
+                                weight_by_degree=False):
     
     torch.manual_seed(1)
 
     _,(_,attn_weights_list) = model(dataloader.data.x,dataloader.data.edge_index,dataloader.data.edge_attr)
     attn_weights = torch.cat(attn_weights_list,dim=1).mean(1)
+    
+    if weight_by_degree:
+        deg = degree(dataloader.data.edge_index[1])
+        attn_weights *= deg[dataloader.data.edge_index[1]]
 
     e_id = torch.nonzero(attn_weights >= attn_thresh).squeeze()
     

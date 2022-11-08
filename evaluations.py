@@ -14,6 +14,7 @@ from torch_geometric.utils import degree
 
 from collections import Counter
 from sklearn.metrics import dcg_score
+from scipy.special import kl_div
 
 def evaluate_single_model(model_type,evaluator,model,dataloader,device=0,task='gpp',mask_attr=None):
     
@@ -141,6 +142,44 @@ def label_agreement(model,dataloader,task,device=0,weight_by_degree=False):
     torch.cuda.empty_cache() 
     
     return average_precision_score(y_true,y_pred),roc_auc_score(y_true,y_pred),y_true.mean()
+
+def label_agreement_kl(model,dataloader,task,device=0,weight_by_degree=False):
+    
+    model = model.to(device)
+    
+    y_true = []
+    y_pred = []
+    kl_list = []
+    for batch in dataloader:
+        batch = batch.to(device)
+        if task == 'gpp':
+            batch_pred,(batch_edge_index,batch_attn_weights_list) = model(batch.x,batch.edge_index,batch.ptr,batch.edge_attr)
+        else:
+            batch_pred,(batch_edge_index,batch_attn_weights_list) = model(batch.x,batch.edge_index,batch.edge_attr)
+
+        attn_weights = torch.cat(batch_attn_weights_list,1).mean(1)
+        label1,label2 = batch.y[batch.edge_index]
+        
+        agree = (label1 == label2).float().cpu().data.numpy()
+        
+        
+        edge_index = batch_edge_index.cpu().data.numpy()
+        for target_idx in list(set(edge_index[1])):
+            attn_weights_neigh = attn_weights[edge_index[1] == target_idx]
+            
+            agree_neigh = attn_weights[edge_index[1] == target_idx]
+            agree_neigh *= 1./agree_neigh.sum()
+            
+            attn_weights_neigh = attn_weights_neigh.cpu().data.numpy()
+            agree_neigh = agree_neigh.cpu().data.numpy()
+            
+            kl_list.extend(kl_div(attn_weights_neigh,agree_neigh))
+
+    torch.cuda.empty_cache() 
+    
+    return np.mean(kl_list)
+
+
 
 def attn_freq_dcg(model,dataloader,task,device=0,weight_by_degree=False):
     
@@ -369,6 +408,39 @@ def evaluate_label_agreement(dataset_name,dataloader,save_dir,params_dict,
     
     return results_df
 
+def evaluate_label_agreement_kl(dataset_name,dataloader,save_dir,params_dict,
+                    device=0,suffix='interv',task='npp',mask_attr='test_mask',
+                    weight_by_degree=False):
+    
+    data_dict = {k: [] for k in ['model','base','n_layers','dim_hidden',
+                               'heads','lc','ni','set','kl']}
+    
+    for model_base in params_dict['model']:
+        model_type = '{}.{}'.format(model_base,suffix)
+        for dim_hidden in params_dict['hd']:
+            for n_layers in params_dict['nl']:
+                for heads in params_dict['heads']:
+                    dim_in,dim_out,edge_dim,_ = get_dataset_params(dataset_name,dataloader,dim_hidden)
+                    n_embeddings = dataloader.data.num_nodes if dataset_name == 'ogbl-ddi' else None
+
+                    model = load_model(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,
+                                         n_layers,edge_dim,save_dir,base=True,lc=None,ni=None,n_embeddings=n_embeddings)
+                    mean_kl = label_agreement_kl(model,dataloader,task=task,device=device,weight_by_degree=weight_by_degree)
+                    add_results_to_dict(data_dict,model_type,True,n_layers,heads,dim_hidden,0,0,'test','kl',mean_kl)
+
+                    for lc in params_dict['lc']:
+                        for ni in params_dict['ni']:
+                            model = load_model(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,
+                                                 n_layers,edge_dim,save_dir,base=False,lc=lc,ni=ni,n_embeddings=n_embeddings)
+                            mean_kl = label_agreement_kl(model,dataloader,task=task,device=device,weight_by_degree=weight_by_degree)
+                            add_results_to_dict(data_dict,model_type,False,n_layers,heads,dim_hidden,lc,ni,'test','kl',mean_kl)
+                            
+    results_df = pd.DataFrame(data_dict)
+    results_df['params'] = ['nl{}.hd{}.{}heads.lc{}.ni{}'.format(int(n_layers),int(dim_hidden),int(heads),lc,int(ni)) 
+                        for n_layers,dim_hidden,heads,lc,ni in results_df[['n_layers','dim_hidden','heads','lc','ni']].values]
+    
+    return results_df
+
 def evaluate_attn_freq_dcg(dataset_name,dataloader,save_dir,params_dict,
                     device=0,suffix='interv',task='npp',mask_attr='test_mask',
                     weight_by_degree=False):
@@ -446,7 +518,7 @@ def evaluate_models_gcn_base(dataset_name,evaluator,save_dir,params_dict,
 
 def evaluate_models_gcn(dataset_name,evaluator,save_dir,params_dict,
                     eval_metric='acc',device=0,suffix='interv',task='npp',batch_size=5000,attn_thresh=0.1,trial_no=0,
-                    gcn_dim_hidden=20,split_no=0):
+                    gcn_dim_hidden=20,split_no=0,weight_by_degree=False):
     
     orig_save_dir = os.path.join(save_dir,'models')
     rewire_save_dir = os.path.join(save_dir,'models_rewire')
@@ -469,11 +541,14 @@ def evaluate_models_gcn(dataset_name,evaluator,save_dir,params_dict,
                     model = load_model(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,
                                      n_layers,edge_dim,orig_save_dir,base=True,lc=None,ni=None,n_embeddings=n_embeddings)
                     rewired_train_loader = generate_rewired_dataloader(model,train_loader,attn_thresh=attn_thresh,
-                                                                     batch_size=batch_size,shuffle=False,verbose=False)
+                                                                     batch_size=batch_size,shuffle=False,verbose=False,
+                                                                     weight_by_degree=weight_by_degree)
                     rewired_valid_loader = generate_rewired_dataloader(model,valid_loader,attn_thresh=attn_thresh,
-                                                                     batch_size=batch_size,shuffle=False,verbose=False)
+                                                                       batch_size=batch_size,shuffle=False,verbose=False,
+                                                                       weight_by_degree=weight_by_degree)
                     rewired_test_loader = generate_rewired_dataloader(model,test_loader,attn_thresh=attn_thresh,
-                                                                    batch_size=batch_size,shuffle=False,verbose=False)
+                                                                      batch_size=batch_size,shuffle=False,verbose=False,
+                                                                      weight_by_degree=weight_by_degree)
 
                     model_gcn = load_model_gcn(dataset_name,model_type + '.trial{}'.format(trial_no),heads,dim_in,dim_hidden,dim_out,
                                          n_layers,edge_dim,rewire_save_dir,base_gcn=False,base=True,
@@ -500,11 +575,14 @@ def evaluate_models_gcn(dataset_name,evaluator,save_dir,params_dict,
                             model = load_model(dataset_name,model_type,heads,dim_in,dim_hidden,dim_out,
                                              n_layers,edge_dim,orig_save_dir,base=False,lc=lc,ni=ni,n_embeddings=n_embeddings)
                             rewired_train_loader = generate_rewired_dataloader(model,train_loader,attn_thresh=attn_thresh,
-                                                                             batch_size=batch_size,shuffle=False,verbose=False)
+                                                                               batch_size=batch_size,shuffle=False,verbose=False,
+                                                                               weight_by_degree=weight_by_degree)
                             rewired_valid_loader = generate_rewired_dataloader(model,valid_loader,attn_thresh=attn_thresh,
-                                                                             batch_size=batch_size,shuffle=False,verbose=False)
+                                                                               batch_size=batch_size,shuffle=False,verbose=False,
+                                                                               weight_by_degree=weight_by_degree)
                             rewired_test_loader = generate_rewired_dataloader(model,test_loader,attn_thresh=attn_thresh,
-                                                                            batch_size=batch_size,shuffle=False,verbose=False)
+                                                                              batch_size=batch_size,shuffle=False,verbose=False,
+                                                                              weight_by_degree=weight_by_degree)
 
                             model_gcn = load_model_gcn(dataset_name,model_type + '.trial{}'.format(trial_no),heads,dim_in,dim_hidden,dim_out,
                                                  n_layers,edge_dim,rewire_save_dir,base=False,lc=lc,ni=ni,n_embeddings=n_embeddings,
@@ -531,7 +609,7 @@ from matplotlib.ticker import FormatStrFormatter
 
 model_color = {'gat': 'green', 'gatv2': 'blue', 'transformer': 'red'}
 
-def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_path=None,plot=True):
+def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_path=None,plot=True,rotation=0,nbins=5):
     
     plot_dict = {k: [] for k in ['x','y','model','params']}
     results_df = results_df[results_df['set'] == eval_set]
@@ -560,37 +638,44 @@ def plot_comparisons(results_df,eval_set,eval_metric='acc',alpha_feat='lc',save_
     if plot:
         
         plt.figure(figsize=(4,4))
-        for model,model_df in plot_df.groupby('model'):
-
-            alpha_scale = np.log(1+model_df[alpha_feat]/model_df[alpha_feat].min())
-            plt.scatter(model_df['x'],model_df['y'], 
-                      c=model_color[model],label=model,edgecolors='black',
-                      s=150*(1+model_df[alpha_feat])/(1+model_df[alpha_feat]).max())
-                      #alpha=(1+model_df[alpha_feat])/(1+model_df[alpha_feat]).max(),
-
+        
         min_value = plot_df[['x','y']].values.min()
         max_value = plot_df[['x','y']].values.max()
         min_value = min_value - 0.05*(max_value-min_value)
         max_value = max_value + 0.05*(max_value-min_value)
         
+        plt.plot([min_value,max_value],[min_value,max_value],linestyle='--',linewidth=2,color='grey')
+            
+        for model,model_df in plot_df.groupby('model'):
+            if alpha_feat is None:
+                s = 150
+            else:
+                s = 150*(1+model_df[alpha_feat])/(1+model_df[alpha_feat]).max()
+
+            plt.scatter(model_df['x'],model_df['y'], 
+                      c=model_color[model],label=model,edgecolors='black',
+                      s=s)
+        
         plt.xlim([min_value,max_value])
         plt.ylim([min_value,max_value])
 
-        plt.plot([min_value,max_value],[min_value,max_value],linestyle='--',linewidth=1,color='grey')
-        leg = plt.legend(fontsize=16,bbox_to_anchor=(1,1),frameon=False)
-
-        for lh in leg.legendHandles: 
-            lh.set_alpha(1)
-            lh._sizes = [100] 
+#         leg = plt.legend(fontsize=16,bbox_to_anchor=(1,1),frameon=False)
+#         for lh in leg.legendHandles: 
+#             lh.set_alpha(1)
+#             lh._sizes = [100] 
 
         ticks = (np.linspace(min_value,max_value,20)*20).astype(int)/20
         ticks = sorted(list(set(ticks)))
-        plt.xticks(fontsize=12)
-        plt.yticks(fontsize=12)
-        plt.xlabel('Baseline\n{}'.format(eval_metric.upper()),fontsize=18)
-        plt.ylabel('Causal Attention\n{}'.format(eval_metric.upper()),fontsize=18)
-
-        plt.title(eval_set.upper(),fontsize=18)
+        plt.xticks(fontsize=20,rotation=rotation)
+        plt.yticks(fontsize=20)
+        
+        plt.locator_params(axis='x',nbins=nbins)
+        plt.locator_params(axis='y',nbins=nbins)
+        
+        # plt.xlabel('Baseline\n{}'.format(eval_metric.upper()),fontsize=28)
+        # plt.ylabel('Causal Attention\n{}'.format(eval_metric.upper()),fontsize=28)
+        plt.xlabel(eval_metric.upper(),fontsize=24)
+        plt.ylabel(eval_metric.upper(),fontsize=24)
 
         sns.despine()
 
@@ -633,12 +718,12 @@ def plot_rand_comparison(plot_df_orig,plot_df_rand,eval_metric,alpha_feat='lc',s
     
 model_color = {'gat': 'green', 'gatv2': 'blue', 'transformer': 'red'}
 
-def plot_attention(all_results,eval_set,eval_metric,save_path=None,base_results_df=None):
+def plot_attention(all_results,eval_set,eval_metric,save_path=None): #,base_results_df=None):
     
     eval_df = all_results[all_results['set'] == eval_set]
     
-    base_metric = base_results_df.loc[eval_set][eval_metric]
-    
+    base_metric = eval_df[eval_df['attn'] == 0][eval_metric].mean()
+                          
     plt.figure(figsize=(4,5))
     for model,model_df in eval_df.groupby('model'):
 
@@ -656,18 +741,21 @@ def plot_attention(all_results,eval_set,eval_metric,save_path=None,base_results_
         print('{} (base) AUC:'.format(model),integrate(model_df[model_df['base']]['attn'].values,
                                                        model_df[model_df['base']][eval_metric].values-base_metric))
         
-    if base_results_df is not None:
-        plt.axhline(y=base_metric,
-                    color='black',linestyle='--',linewidth=2,label='GCN without rewiring')
+    # if base_results_df is not None:
+    plt.axhline(y=base_metric,color='black',linestyle='--',linewidth=2,label='GCN without rewiring')
         
     plt.legend(fontsize=16,bbox_to_anchor=(1,1),frameon=False)
 
     plt.title(eval_set.upper(),fontsize=20)
 
-    plt.xlabel('Attention Threshold',fontsize=18)
-    plt.ylabel(eval_metric.upper(),fontsize=18)
-    plt.xticks(fontsize=16)
-    plt.yticks(fontsize=16)
+    plt.xlabel('Attention Threshold',fontsize=24)
+    plt.ylabel(eval_metric.upper(),fontsize=24)
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
+    
+    plt.locator_params(axis='x',nbins=5)
+    plt.locator_params(axis='y',nbins=5)
+        
     sns.despine()
 
     if save_path is not None:

@@ -79,7 +79,7 @@ def create_edge_item_mapping(ptr,edge_indices):
 def compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
                           edge_attr,node_indices,pred_criterion,
                           task='npp',ptr=None,edge_indices_pred=None,
-                          loss_ratio=False):
+                          loss_ratio=False,edge_item_indices=None):
     
     if task == 'npp':
         pred_loss = pred_criterion(preds[node_indices],
@@ -113,8 +113,11 @@ def compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
     if loss_ratio:
         effect_ratio = interv_pred_loss/(1e-10 + pred_loss)
         if 'deg_wt' in str(loss_ratio):
-            w = degree(remaining_edge_indices[1],
-                       num_nodes=remaining_edge_indices.max()) + 1
+            if task == 'npp':
+                w = degree(remaining_edge_indices[1],
+                           num_nodes=remaining_edge_indices.max()) + 1
+            elif task == 'gpp':
+                w = degree(edge_item_indices[1]).to(effect_ratio.device)
             effect_ratio = effect_ratio**(w[node_indices])
 
         causal_effect = 1/(1+torch.exp(-10*(effect_ratio-1)))
@@ -216,11 +219,12 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
                                                  n_layers=n_layers,task=task)
         remaining_edge_indices,remaining_edge_attr = prune_edges(edge_indices,edge_attr,
                                                                  pruned_e_id,mask)
-    
+        
         if task == 'gpp':
             nodes_to_evaluate = edge_item_indices[1,pruned_e_id]
-        elif task == 'npp' or task == 'lpp':
+        else:
             nodes_to_evaluate = edge_indices[1,pruned_e_id]
+            edge_item_indices = remaining_edge_indices.copy()
         
         # compute causal effect
         if use_labelprop:
@@ -228,13 +232,15 @@ def compute_intervention_loss(model,X,node_indices,edge_indices,Y,preds,
                                                             nodes_to_evaluate,pred_criterion,
                                                             task=task,ptr=ptr,
                                                             edge_indices_pred=edge_indices_pred,
-                                                            loss_ratio=loss_ratio)
+                                                            loss_ratio=loss_ratio,
+                                                            edge_item_indices=edge_item_indices)
         else:
             causal_effect = compute_causal_effect(model,X,Y,preds,remaining_edge_indices,
                                                   remaining_edge_attr,nodes_to_evaluate,
                                                   pred_criterion,task=task,ptr=ptr,
                                                   edge_indices_pred=edge_indices_pred,
-                                                  loss_ratio=loss_ratio)
+                                                  loss_ratio=loss_ratio,
+                                                  edge_item_indices=edge_item_indices)
             
         causal_effect = torch.nan_to_num(causal_effect,nan=1e-10)
         # print(causal_effect.min(),causal_effect.max(),causal_effect.mean(),causal_effect.median())

@@ -17,7 +17,10 @@ def instantiate_model(dataset_name,model_type,dim_in,dim_hidden,dim_out,
     
     torch.manual_seed(seed)
     
-    if 'ogbn' in dataset_name or dataset_name in NODE_CLASS_DATASETS:
+    if 'CAL' in model_type:
+        model = GATNet(dim_in,dim_out,dim_hidden,head=heads,num_conv_layers=n_layers)
+
+    elif 'ogbn' in dataset_name or dataset_name in NODE_CLASS_DATASETS:
         model = GATNode(model_type,dim_in,dim_hidden,dim_out,
                           heads,n_layers,edge_dim)
 
